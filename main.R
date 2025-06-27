@@ -124,7 +124,6 @@ main <- function(file_path = FILE_PATH,
   # ---------------------------------------------------------------------------
   yoy_actual   <- compute_yoy_growth(actual_df)
   yoy_forecast <- compute_yoy_growth(forecast_df)
-  yoy_fan_chart <- plot_forecast_paths(yoy_forecast, yoy_actual)
   
   # ---------------------------------------------------------------------------
   # 5 ▸ RMSE evaluation -------------------------------------------------------
@@ -148,18 +147,23 @@ main <- function(file_path = FILE_PATH,
   # ---------------------------------------------------------------------------
   # 8 ▸ Output handling -------------------------------------------------------
   # ---------------------------------------------------------------------------
-  if (verbose) print(rmse_tbl)
+  if (verbose) {
+    print(rmse_tbl)
+    latest_kalman <- yoy_forecast %>%
+      dplyr::filter(Model == "Kalman") %>%
+      dplyr::arrange(dplyr::desc(Origin), Date) %>%
+      head(22)
+    print(latest_kalman, n = 22)
+  }
   if (plots) {
     print(rmse_plot)
     print(fan_chart)
-    print(yoy_fan_chart)
   }
 
   invisible(list(
     rmse_table = rmse_tbl,
     rmse_plot  = rmse_plot,
     fan_chart  = fan_chart,
-    yoy_fan_chart = yoy_fan_chart,
     forecasts  = forecast_df,
     actual     = actual_df,
     yoy_forecast = yoy_forecast,
