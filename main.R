@@ -83,14 +83,20 @@ main <- function(file_path = FILE_PATH,
   series   <- build_quarterly_ts(canton_df)
   y      <- series$ts
   dates  <- series$dates
+  covid_dummy <- as.numeric(dates >= as.Date("2020-04-01") &
+                              dates <= as.Date("2021-12-31"))
+  covid_ts    <- ts(covid_dummy,
+                    start = start(y),
+                    frequency = frequency(y))
   
   # ---------------------------------------------------------------------------
   # ▸ Kalman smoother to estimate actual series (2016–2024) -------------------
   # ---------------------------------------------------------------------------
-  model_kalman <- SSModel(y ~ SSMtrend(2, Q = list(NA, NA)) +
+  xreg <- ts(covid_dummy, start = start(y), frequency = frequency(y))
+  model_kalman <- SSModel(y ~ covid_ts + SSMtrend(2, Q = list(NA, NA)) +
                             SSMseasonal(period = 4, sea.type = "dummy", Q = NA),
                           H = NA)
-  fit_kalman <- fitSSM(model_kalman, inits = rep(log(var(y)), 4))
+  fit_kalman <- fitSSM(model_kalman, inits = rep(log(var(y) * 10), 4))
   smooth_kalman <- KFS(fit_kalman$model, smoothing = "state")
   
   # Extract smoothed level + seasonality
@@ -107,8 +113,8 @@ main <- function(file_path = FILE_PATH,
   # ---------------------------------------------------------------------------
   # 2 ▸ Forecast generation (historical roll + future fan) --------------------
   # ---------------------------------------------------------------------------
-  fc_hist <- rolling_origin_forecasts(y, dates, horizon)
-  fc_fut  <- final_forecasts(y, dates, horizon)
+  fc_hist <- rolling_origin_forecasts(y, dates, horizon, covid_ts)
+  fc_fut  <- final_forecasts(y, dates, horizon, covid_ts)
   forecast_df <- dplyr::bind_rows(fc_hist, fc_fut)
   assign("kalman_forecast", forecast_df, envir = .GlobalEnv)
   
@@ -160,13 +166,13 @@ main <- function(file_path = FILE_PATH,
     print(fan_chart)
   }
 
-  invisible(list(
-    rmse_table = rmse_tbl,
-    rmse_plot  = rmse_plot,
-    fan_chart  = fan_chart,
-    forecasts  = forecast_df,
-    actual     = actual_df,
-    yoy_forecast = yoy_forecast,
-    yoy_actual   = yoy_actual
+  # invisible(list(
+  #   rmse_table = rmse_tbl,
+  #   rmse_plot  = rmse_plot,
+  #   fan_chart  = fan_chart,
+  #   forecasts  = forecast_df,
+  #   actual     = actual_df,
+  #   yoy_forecast = yoy_forecast,
+  #   yoy_actual   = yoy_actual
   ))
 }
