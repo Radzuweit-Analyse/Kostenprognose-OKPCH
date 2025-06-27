@@ -4,7 +4,7 @@
 #' @file        okp_forecast_evaluation.R
 #' @author      Raphaël Radzuweit
 #' @date        2025‑05‑18
-#' @license     Proprietary License
+#' @license     Proprietary License, file LICENSE
 #'
 #' @title Out‑of‑Sample Forecast Evaluation for Swiss Healthcare Costs
 #'
