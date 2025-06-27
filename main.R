@@ -47,10 +47,11 @@ library(zoo)          # yearqtr ⇄ Date conversion
 library(readxl)       # XLSX import
 library(forecast)     # ARIMA / naïve benchmarks
 library(KFAS)         # structural time‑series & Kalman smoother
-source("rmse_utils.R")
-source("out_of_sample_plot_utils.R")
-source("data_utils.R")
-source("multivariate_kalman_utils.R")
+source("R/rmse_utils.R")
+source("R/out_of_sample_plot_utils.R")
+source("R/data_utils.R")
+source("R/multivariate_kalman_utils.R")
+source("R/forecast_utils.R")
 
 # ---------------------------- Constants --------------------------------------
 FILE_PATH        <- "02_Monitoring-des-couts_Serie-temporelle-trimestre.xlsx"  # raw data
@@ -61,98 +62,6 @@ COST_GROUP       <- "Total"  # default cost basket
 # Corporate visual identity (neutral grey scale, printer‑friendly)
 GREY_PALETTE <- c(Kalman = "#444444", ARMA = "#888888", RW = "#BBBBBB")
 LINETYPES    <- c(Kalman = "solid", ARMA = "dashed", RW = "dotted", Actual = "solid")
-
-#' Fit benchmark models and produce h‑step forecasts
-#'
-#' @param train_y `ts` – training window (≥ 8 observations).
-#' @param h       `integer(1)` – forecast horizon in quarters.
-#'
-#' @return A **named list** of numeric vectors (`Kalman`, `ARMA`, `RW`) each of
-#'   length `h`.  Elements are filled with `NA_real_` if model estimation fails.
-#'
-#' @examples
-#' y <- AirPassengers ; h <- 4
-#' fit_and_forecast(y, h)
-#' @keywords internal
-fit_and_forecast <- function(train_y, h) {
-  # --- internal helper: wrap estimator in try‑catch -------------------------
-  safe_fc <- function(expr) tryCatch(expr, error = function(e) rep(NA_real_, h))
-  
-  # Seasonal ARIMA -----------------------------------------------------------
-  arma_fc <- safe_fc({
-    fit <- Arima(train_y,
-                 order    = c(1, 1, 1),
-                 seasonal = list(order = c(1, 0, 1), period = 4),
-                 include.drift = TRUE)
-    forecast(fit, h = h)$mean
-  })
-  
-  # Random Walk with drift ---------------------------------------------------
-  rw_fc <- safe_fc({
-    fit <- Arima(train_y, order = c(0, 1, 0), include.drift = TRUE)
-    forecast(fit, h = h)$mean
-  })
-  
-  # Structural‑time‑series (local‑level + seasonal) --------------------------
-  kalman_fc <- safe_fc({
-    model <- SSModel(train_y ~ SSMtrend(2, Q = list(NA, NA)) +
-                       SSMseasonal(period = 4, sea.type = "dummy", Q = NA),
-                     H = NA)
-    fit <- fitSSM(model, inits = rep(log(var(train_y)), 4))
-    as.numeric(predict(fit$model, n.ahead = h))
-  })
-  
-  list(Kalman = kalman_fc, ARMA = arma_fc, RW = rw_fc)
-}
-
-#' Rolling‑origin forecasts over historical span
-#'
-#' @param y     `ts` – full observed series.
-#' @param dates `Date` – companion date vector.
-#' @param h     `integer(1)` – forecast horizon (quarters).
-#'
-#' @return A tidy `tibble` with columns *Date*, *Model*, *Value*, *Origin*.
-#' @export
-rolling_origin_forecasts <- function(y, dates, h) {
-  purrr::map_dfr(seq_len(length(y) - h), function(i) {
-    train_y <- window(y, end = time(y)[i])
-    if (length(train_y) < 8) return(NULL)  # skip initial burn‑in
-    
-    origin  <- dates[i]
-    fc      <- fit_and_forecast(train_y, h)
-    fut_dt  <- dates[(i + 1):(i + h)]
-    last_obs <- tail(train_y, 1)
-    
-    bind_rows(
-      tibble(Date = c(origin, fut_dt), Model = "Kalman", Value = c(last_obs, fc$Kalman), Origin = origin),
-      tibble(Date = c(origin, fut_dt), Model = "ARMA",   Value = c(last_obs, fc$ARMA),   Origin = origin),
-      tibble(Date = c(origin, fut_dt), Model = "RW",     Value = c(last_obs, fc$RW),     Origin = origin)
-    )
-  })
-}
-
-#' Forecast from the most recent *h* origins (produces future fan chart)
-#'
-#' @inheritParams rolling_origin_forecasts
-#' @return Same format as `rolling_origin_forecasts()` but limited to the last
-#'   `h` origins.
-#' @export
-final_forecasts <- function(y, dates, h) {
-  tail_idx <- (length(y) - h + 1):length(y)
-  purrr::map_dfr(tail_idx, function(i) {
-    train_y <- window(y, end = time(y)[i])
-    origin  <- dates[i]
-    fc      <- fit_and_forecast(train_y, h)
-    fut_dt  <- seq(from = origin + months(3), by = "quarter", length.out = h)
-    last_obs<- tail(train_y, 1)
-    
-    bind_rows(
-      tibble(Date = c(origin, fut_dt), Model = "Kalman", Value = c(last_obs, fc$Kalman), Origin = origin),
-      tibble(Date = c(origin, fut_dt), Model = "ARMA",   Value = c(last_obs, fc$ARMA),   Origin = origin),
-      tibble(Date = c(origin, fut_dt), Model = "RW",     Value = c(last_obs, fc$RW),     Origin = origin)
-    )
-  })
-}
 
 #' ------------------------- Main Orchestration ------------------------------
 #' @title End‑to‑End Pipeline
@@ -263,4 +172,3 @@ main <- function(file_path = FILE_PATH,
     actual     = actual_df
   ))
 }
-main()
