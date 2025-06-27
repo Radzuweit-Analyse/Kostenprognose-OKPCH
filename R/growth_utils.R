@@ -8,8 +8,8 @@
 #' @param include_canton_column Logical. If `TRUE` and if `Canton` is present in
 #'   `df`, the canton column will be kept in the output.
 #'
-#' @return A tibble with yearly YoY percentage growth. Columns include `Year`,
-#'   `Model`, `Growth` and optionally `Origin` and `Canton` if supplied.
+#' @return A tibble with yearly YoY percentage growth. Columns include `Date`,
+#'   `Value`, `Model` and optionally `Origin` and `Canton` if supplied.
 #' @export
 compute_yoy_growth <- function(df, include_canton_column = FALSE) {
   stopifnot(all(c("Date", "Value", "Model") %in% names(df)))
@@ -23,7 +23,7 @@ compute_yoy_growth <- function(df, include_canton_column = FALSE) {
 
   yearly <- df %>%
     group_by(across(all_of(grouping_vars))) %>%
-    summarise(Value = sum(Value), .groups = "drop") %>%
+    summarise(total = sum(Value), .groups = "drop") %>%
     arrange(across(all_of(grouping_vars)))
 
   diff_vars <- c(if (include_canton_column && "Canton" %in% names(df)) "Canton",
@@ -32,9 +32,10 @@ compute_yoy_growth <- function(df, include_canton_column = FALSE) {
 
   yoy <- yearly %>%
     group_by(across(all_of(diff_vars))) %>%
-    mutate(Growth = (Value / lag(Value) - 1) * 100) %>%
+    mutate(Value = (total / lag(total) - 1) * 100) %>%
     ungroup() %>%
-    filter(!is.na(Growth))
+    filter(!is.na(Value)) %>%
+    mutate(Date = lubridate::make_date(Year, 1, 1))
 
-  yoy %>% select(all_of(c(diff_vars, "Year", "Growth")))
+  yoy %>% select(all_of(c(diff_vars)), Date, Value)
 }
