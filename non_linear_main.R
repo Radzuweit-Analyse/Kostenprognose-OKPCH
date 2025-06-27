@@ -8,7 +8,7 @@ library(zoo)
 library(readxl)
 library(bssm)
 
-source("data_utils.R")
+source("R/data_utils.R")
 
 FILE_PATH        <- "02_Monitoring-des-couts_Serie-temporelle-trimestre.xlsx"
 FORECAST_HORIZON <- 8
