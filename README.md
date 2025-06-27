@@ -23,6 +23,9 @@ This script compares ARIMA, random walk and structural time‑series models. Fro
 source("main.R")            # loads functions
 main()                      # run the analysis
 ```
+`main()` invisibly returns a list containing the forecast paths, RMSE table,
+diagnostic plots and the year-over-year (YoY) growth tables (`yoy_forecast` and
+`yoy_actual`).
 
 Optional arguments allow overriding the data file path or forecast horizon.
 

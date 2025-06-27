@@ -52,6 +52,7 @@ source("R/out_of_sample_plot_utils.R")
 source("R/data_utils.R")
 source("R/multivariate_kalman_utils.R")
 source("R/forecast_utils.R")
+source("R/growth_utils.R")
 
 # ---------------------------- Constants --------------------------------------
 FILE_PATH        <- "02_Monitoring-des-couts_Serie-temporelle-trimestre.xlsx"  # raw data
@@ -117,32 +118,21 @@ main <- function(file_path = FILE_PATH,
   actual_df <- tibble(Date = dates,
                       Value = as.numeric(y),
                       Model = "Actual")
-  
-  # test in growht term
-  # Convert both forecast and actual series to growth terms
-  # Apply growth transformation to actuals
-  actual_growth <- actual_df %>%
-    arrange(Date) %>%
-    mutate(Value = Value - lag(Value)) %>%
-    filter(!is.na(Value))
-  
-  # Apply growth transformation to forecasts
-  forecast_growth <- forecast_df %>%
-    arrange(Model, Origin, Date) %>%
-    group_by(Model, Origin) %>%
-    mutate(Value = Value - lag(Value)) %>%
-    filter(!is.na(Value)) %>%
-    ungroup()
-  
-  fan_chart <- plot_forecast_paths(forecast_growth, actual_growth)
+
+  # ---------------------------------------------------------------------------
+  # 4 ▸ Year-over-year growth tables ------------------------------------------
+  # ---------------------------------------------------------------------------
+  yoy_actual   <- compute_yoy_growth(actual_df)
+  yoy_forecast <- compute_yoy_growth(forecast_df)
+  yoy_fan_chart <- plot_forecast_paths(yoy_forecast, yoy_actual)
   
   # ---------------------------------------------------------------------------
-  # 4 ▸ RMSE evaluation -------------------------------------------------------
+  # 5 ▸ RMSE evaluation -------------------------------------------------------
   # ---------------------------------------------------------------------------
   rmse_tbl <- compute_rmse_table(forecast_df, actual_df, horizon)
   
   # ---------------------------------------------------------------------------
-  # 5 ▸ Prepare scored long table (for plotting) ------------------------------
+  # 6 ▸ Prepare scored long table (for plotting) ------------------------------
   # ---------------------------------------------------------------------------
   scored_long <- forecast_df %>%
     dplyr::left_join(actual_df %>% rename(True = Value) %>% dplyr::select(Date, True), by = "Date") %>%
@@ -150,25 +140,29 @@ main <- function(file_path = FILE_PATH,
     dplyr::filter(dplyr::between(Horizon, 1, horizon))
   
   # ---------------------------------------------------------------------------
-  # 6 ▸ Diagnostics plots -----------------------------------------------------
+  # 7 ▸ Diagnostics plots -----------------------------------------------------
   # ---------------------------------------------------------------------------
   rmse_plot <- plot_rmse(scored_long)
   fan_chart <- plot_forecast_paths(forecast_df, actual_df)
   
   # ---------------------------------------------------------------------------
-  # 7 ▸ Output handling -------------------------------------------------------
+  # 8 ▸ Output handling -------------------------------------------------------
   # ---------------------------------------------------------------------------
   if (verbose) print(rmse_tbl)
   if (plots) {
     print(rmse_plot)
     print(fan_chart)
+    print(yoy_fan_chart)
   }
-  
+
   invisible(list(
     rmse_table = rmse_tbl,
     rmse_plot  = rmse_plot,
     fan_chart  = fan_chart,
+    yoy_fan_chart = yoy_fan_chart,
     forecasts  = forecast_df,
-    actual     = actual_df
+    actual     = actual_df,
+    yoy_forecast = yoy_forecast,
+    yoy_actual   = yoy_actual
   ))
 }
