@@ -92,7 +92,6 @@ main <- function(file_path = FILE_PATH,
   # ---------------------------------------------------------------------------
   # ▸ Kalman smoother to estimate actual series (2016–2024) -------------------
   # ---------------------------------------------------------------------------
-  xreg <- ts(covid_dummy, start = start(y), frequency = frequency(y))
   model_kalman <- SSModel(y ~ covid_ts + SSMtrend(2, Q = list(NA, NA)) +
                             SSMseasonal(period = 4, sea.type = "dummy", Q = NA),
                           H = NA)
@@ -166,13 +165,13 @@ main <- function(file_path = FILE_PATH,
     print(fan_chart)
   }
 
-  # invisible(list(
-  #   rmse_table = rmse_tbl,
-  #   rmse_plot  = rmse_plot,
-  #   fan_chart  = fan_chart,
-  #   forecasts  = forecast_df,
-  #   actual     = actual_df,
-  #   yoy_forecast = yoy_forecast,
-  #   yoy_actual   = yoy_actual
+  invisible(list(
+    rmse_table = rmse_tbl,
+    rmse_plot  = rmse_plot,
+    fan_chart  = fan_chart,
+    forecasts  = forecast_df,
+    actual     = actual_df,
+    yoy_forecast = yoy_forecast,
+    yoy_actual   = yoy_actual
   ))
 }

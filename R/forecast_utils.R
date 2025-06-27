@@ -34,17 +34,14 @@ fit_and_forecast <- function(train_y, h, train_x = NULL) {
   # Structural‑time‑series (local‑level + seasonal) --------------------------
   kalman_fc <- safe_fc({
     if (!is.null(train_x)) {
-      xreg <- ts(train_x,
-                 start = stats::start(train_y),
-                 frequency = stats::frequency(train_y))
-      model <- SSModel(train_y ~ xreg +
+      model <- SSModel(train_y ~ train_x +
                          SSMtrend(2, Q = list(NA, NA)) +
                          SSMseasonal(period = 4, sea.type = "dummy", Q = NA),
                        H = NA)
       fit <- fitSSM(model, inits = rep(log(var(train_y) * 10), 4))
       future_x <- rep(0, h)
       as.numeric(predict(fit$model, n.ahead = h,
-                         newdata = data.frame(xreg = future_x)))
+                         newdata = data.frame(train_x = future_x)))
     } else {
       model <- SSModel(train_y ~ SSMtrend(2, Q = list(NA, NA)) +
                          SSMseasonal(period = 4, sea.type = "dummy", Q = NA),
