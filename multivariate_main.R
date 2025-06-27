@@ -6,10 +6,10 @@ library(tidyverse)
 library(lubridate)
 library(KFAS)
 library(zoo)
-source("data_utils.R")
-source("rmse_utils.R")
-source("out_of_sample_plot_utils.R")
-source("multivariate_kalman_utils.R")
+source("R/data_utils.R")
+source("R/rmse_utils.R")
+source("R/out_of_sample_plot_utils.R")
+source("R/multivariate_kalman_utils.R")
 
 # ---------------------------- Constants --------------------------------------
 FILE_PATH        <- "02_Monitoring-des-couts_Serie-temporelle-trimestre.xlsx"  # raw data
@@ -66,6 +66,3 @@ main_multivariate <- function(file_path = FILE_PATH, cost_grp = "Total", h = 8) 
     fan_chart   = fan_plot
   ))
 }
-
-# Run the multivariate analysis
-main_multivariate()
