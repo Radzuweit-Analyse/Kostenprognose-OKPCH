@@ -123,7 +123,7 @@ main <- function(file_path = FILE_PATH,
   # 4 ▸ Year-over-year growth tables ------------------------------------------
   # ---------------------------------------------------------------------------
   yoy_actual   <- compute_yoy_growth(actual_df)
-  yoy_forecast <- compute_yoy_growth(forecast_df)
+  yoy_forecast <- compute_yoy_growth(forecast_df, actuals = actual_df)
   
   # ---------------------------------------------------------------------------
   # 5 ▸ RMSE evaluation -------------------------------------------------------
@@ -150,10 +150,10 @@ main <- function(file_path = FILE_PATH,
   if (verbose) {
     print(rmse_tbl)
     latest_kalman <- yoy_forecast %>%
-      dplyr::filter(Model == "Kalman") %>%
-      dplyr::arrange(dplyr::desc(Origin), Date) %>%
-      head(22)
-    print(latest_kalman, n = 22)
+    dplyr::filter(Model == "Kalman") %>%
+    dplyr::filter(Origin == max(Origin)) %>%
+      dplyr::arrange(Date)
+    print(latest_kalman, n = nrow(latest_kalman))
   }
   if (plots) {
     print(rmse_plot)
