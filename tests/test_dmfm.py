@@ -401,3 +401,14 @@ def test_select_dmfm_qml_search_P():
     k1, k2, P = KPOKPCH.select_dmfm_qml(Y, max_k=1, max_P=2, criterion="aic")
     assert isinstance(k1, int) and isinstance(k2, int) and isinstance(P, int)
     assert k1 == 1 and k2 == 1 and 1 <= P <= 2
+
+
+def test_standard_errors_shapes():
+    Y = generate_data(T=6)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, return_se=True)
+    se = params.get("standard_errors")
+    assert se is not None
+    assert se["se_R"].shape == params["R"].shape
+    assert se["se_C"].shape == params["C"].shape
+    assert se["ci_R"].shape == params["R"].shape + (2,)
+    assert se["ci_C"].shape == params["C"].shape + (2,)
