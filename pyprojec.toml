@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "KPOKPCH"
+version = "0.0.1"
+description = "Dynamic Matrix Factor Model utilities"
+authors = [{name = "OKP Team"}]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+license = {file = "LICENSE"}
+
+[project.urls]
+Homepage = "https://github.com/example/Kostenprognose-OKPCH"
