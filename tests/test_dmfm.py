@@ -290,19 +290,20 @@ def test_initialize_with_nan_values():
     assert np.all(np.isfinite(params["C"]))
 
 
-def test_idiosyncratic_covariances_are_diagonal():
+def test_idiosyncratic_covariances_full():
     Y = generate_data(T=6, p1=4, p2=3)
     params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
     H = params["H"]
     K = params["K"]
     assert np.allclose(H, H.T)
     assert np.allclose(K, K.T)
-    off_H = H - np.diag(np.diag(H))
-    off_K = K - np.diag(np.diag(K))
-    assert np.all(np.abs(off_H) < 1e-8)
-    assert np.all(np.abs(off_K) < 1e-8)
-    assert np.all(np.diag(H) >= 0)
-    assert np.all(np.diag(K) >= 0)
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-8)
+    assert np.all(np.linalg.eigvalsh(K) >= -1e-8)
+    # off-diagonal entries should generally be present
+    off_H = np.abs(H - np.diag(np.diag(H)))
+    off_K = np.abs(K - np.diag(np.diag(K)))
+    assert off_H.sum() > 0
+    assert off_K.sum() > 0
 
 
 def test_em_step_idempotence_on_convergence():
