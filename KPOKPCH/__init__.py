@@ -9,6 +9,7 @@ __all__ = [
     "qml_loglik_dmfm",
     "em_step_dmfm",
     "fit_dmfm_em",
+    "compute_standard_errors_dmfm",
     "select_dmfm_rank",
     "select_dmfm_qml",
 ]
