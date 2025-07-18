@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.linalg import inv, svd
+import warnings
 
 
 def initialize_dmfm(
@@ -530,15 +531,25 @@ def fit_dmfm_em(
     if nonstationary:
         params["A"] = [np.eye(k1) for _ in range(P)]
         params["B"] = [np.eye(k2) for _ in range(P)]
-    loglik_trace = []
+    loglik_trace: list[float] = []
+    diff_trace: list[float] = []
+    ll_diff_trace: list[float] = []
     last_ll = -np.inf
-    for _ in range(max_iter):
+    for it in range(max_iter):
         params, diff, ll = em_step_dmfm(Y, params, mask, nonstationary)
-        if ll < last_ll:
-            ll = last_ll
+        ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
+        diff_trace.append(diff)
+        ll_diff_trace.append(ll_change)
+        if it > 0 and ll_change < -1e-6:
+            warnings.warn(
+                f"Log-likelihood decreased by {ll_change:.3e} at iteration {it}."
+            )
+            break
         loglik_trace.append(ll)
         last_ll = ll
         if diff < tol:
             break
     params["loglik"] = loglik_trace
+    params["param_diff"] = diff_trace
+    params["ll_diff"] = ll_diff_trace
     return params
