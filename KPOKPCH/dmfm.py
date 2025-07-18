@@ -69,10 +69,11 @@ def initialize_dmfm(
             H += np.outer(resid[t, :, j], resid[t, :, j])
         for i in range(p1):
             K += np.outer(resid[t, i, :], resid[t, i, :])
-    H /= max(1, T * p2)
-    K /= max(1, T * p1)
-    H = np.diag(np.diag(H))
-    K = np.diag(np.diag(K))
+    
+    H = H / max(1, T * p2)
+    K = K / max(1, T * p1)
+    H = 0.5 * (H + H.T)
+    K = 0.5 * (K + K.T)
     tr_H = np.trace(H)
     tr_K = np.trace(K)
     if tr_H > 0:
@@ -245,7 +246,7 @@ def kalman_smoother_dmfm(
     # QML log-likelihood computed from smoothed states --------------------
     loglik = 0.0
     Z_base = np.kron(C, R)
-    Sigma_U_base = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
+    Sigma_U_base = np.kron(K, H)
     for t in range(Tn):
         f_t = xs[t, :r]
         Vt = Vs[t, :r, :r]
@@ -518,27 +519,19 @@ def em_step_dmfm(
         resid = np.where(mask, resid, np.nan)
     H_new = np.zeros_like(H)
     K_new = np.zeros_like(K)
-    count_H = 0
-    count_K = 0
     for t in range(Tn):
-        for j in range(p2):
-            m = mask[t, :, j] if mask is not None else np.ones(p1, dtype=bool)
-            rcol = resid[t, :, j]
-            rcol = rcol[m]
-            H_new[np.ix_(np.where(m)[0], np.where(m)[0])] += np.outer(rcol, rcol)
-            count_H += 1
-        for i in range(p1):
-            m = mask[t, i, :] if mask is not None else np.ones(p2, dtype=bool)
-            rrow = resid[t, i, :]
-            rrow = rrow[m]
-            K_new[np.ix_(np.where(m)[0], np.where(m)[0])] += np.outer(rrow, rrow)
-            count_K += 1
-    if count_H > 0:
-        H_new /= count_H
-    if count_K > 0:
-        K_new /= count_K
-    H_new = np.diag(np.diag(H_new))
-    K_new = np.diag(np.diag(K_new))
+        res_t = resid[t]
+        if mask is not None:
+            res_t = np.where(mask[t], res_t, 0)
+        H_new += res_t @ res_t.T
+        K_new += res_t.T @ res_t
+
+    denom_H = max(1.0, Tn * p2)
+    denom_K = max(1.0, Tn * p1)
+    H_new /= denom_H
+    K_new /= denom_K
+    H_new = 0.5 * (H_new + H_new.T)
+    K_new = 0.5 * (K_new + K_new.T)
     tr_H = np.trace(H_new)
     tr_K = np.trace(K_new)
     if tr_H > 0:
