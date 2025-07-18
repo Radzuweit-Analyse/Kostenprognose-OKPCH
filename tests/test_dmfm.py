@@ -1,5 +1,5 @@
 import numpy as np
-import KOKPCH
+import KPOKPCH
 
 
 def generate_data(T=4, p1=3, p2=2):
