@@ -8,8 +8,9 @@ __all__ = [
     "kalman_smoother_dmfm",
     "qml_loglik_dmfm",
     "em_step_dmfm",
-    "select_dmfm_rank",
     "fit_dmfm_em",
+    "select_dmfm_rank",
+    "select_dmfm_qml",
 ]
 
 def __getattr__(name):
