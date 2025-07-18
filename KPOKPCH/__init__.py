@@ -8,6 +8,7 @@ __all__ = [
     "kalman_smoother_dmfm",
     "qml_loglik_dmfm",
     "em_step_dmfm",
+    "select_dmfm_rank",
     "fit_dmfm_em",
 ]
 
