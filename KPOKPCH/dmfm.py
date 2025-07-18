@@ -123,6 +123,7 @@ def kalman_smoother_dmfm(
     mask: np.ndarray | None = None,
     Pmat: np.ndarray | None = None,
     Qmat: np.ndarray | None = None,
+    i1_factors: bool = False,
 ) -> dict:
     """Kalman smoother for the dynamic matrix factor model.
 
@@ -155,7 +156,7 @@ def kalman_smoother_dmfm(
     k2 = C.shape[1]
     r = k1 * k2
     P = len(A)
-    d = r * P
+    d = r if i1_factors else r * P
     
     if mask is None:
         mask = np.ones_like(Y, dtype=bool)
@@ -165,16 +166,23 @@ def kalman_smoother_dmfm(
 
     Phi = [np.kron(B[l], A[l]) for l in range(P)]
     Qx = np.kron(Qmat, Pmat)
-    Tmat = _construct_state_matrices(A, B)
-    Q_full = np.zeros((d, d))
-    Q_full[:r, :r] = Qx
+    if i1_factors:
+        Tmat = np.eye(r)
+        Q_full = Qx
+    else:
+        Tmat = _construct_state_matrices(A, B)
+        Q_full = np.zeros((d, d))
+        Q_full[:r, :r] = Qx
 
     R_full = np.kron(K, H)
     Z0 = np.kron(C, R)
-    Z_full = np.hstack([Z0] + [np.zeros((p1 * p2, r)) for _ in range(P - 1)])
+    if i1_factors:
+        Z_full = Z0
+    else:
+        Z_full = np.hstack([Z0] + [np.zeros((p1 * p2, r)) for _ in range(P - 1)])
 
     x_pred = np.zeros(d)
-    V_pred = np.eye(d) * 1e2
+    V_pred = np.eye(d) * (1e4 if i1_factors else 1e2)
 
     xp = np.zeros((Tn, d))
     Pp = np.zeros((Tn, d, d))
@@ -185,7 +193,7 @@ def kalman_smoother_dmfm(
     for t in range(Tn):
         if t == 0:
             x_prior = np.zeros(d)
-            V_prior = np.eye(d) * 1e2
+            V_prior = np.eye(d) * (1e4 if i1_factors else 1e2)
         else:
             x_prior = Tmat @ x_pred
             V_prior = Tmat @ V_pred @ Tmat.T + Q_full
@@ -277,10 +285,13 @@ def qml_loglik_dmfm(
     mask: np.ndarray | None = None,
     Pmat: np.ndarray | None = None,
     Qmat: np.ndarray | None = None,
+    i1_factors: bool = False,
 ) -> float:
     """Return QML log-likelihood using the Kalman filter."""
 
-    out = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat, Qmat)
+    out = kalman_smoother_dmfm(
+        Y, R, C, A, B, H, K, mask, Pmat, Qmat, i1_factors=i1_factors
+    )
     return float(out["loglik"])
 
 
@@ -289,6 +300,7 @@ def em_step_dmfm(
     params: dict,
     mask: np.ndarray | None = None,
     nonstationary: bool = False,
+    i1_factors: bool = False,
 ) -> tuple[dict, float, float]:
     """Perform one EM iteration for the DMFM.
 
@@ -304,6 +316,8 @@ def em_step_dmfm(
     nonstationary : bool, optional
         If ``True`` keep MAR coefficients fixed at identity and allow larger
         state innovations.
+    i1_factors : bool, optional
+        If ``True`` treat the latent factors as an I(1) process.
     
     Returns
     -------
@@ -323,6 +337,7 @@ def em_step_dmfm(
             mask,
             params.get("P"),
             params.get("Q"),
+            i1_factors=i1_factors,
         )
         return params, 0.0, ll
     
@@ -338,7 +353,9 @@ def em_step_dmfm(
     scale = 1.0
     if nonstationary:
         scale = 10.0
-    smooth = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat * scale, Qmat * scale)
+    smooth = kalman_smoother_dmfm(
+        Y, R, C, A, B, H, K, mask, Pmat * scale, Qmat * scale, i1_factors=i1_factors
+    )
     F = smooth["F_smooth"]
     Tn, p1, p2 = Y.shape
     k1 = R.shape[1]
@@ -431,37 +448,64 @@ def em_step_dmfm(
     # Update innovation covariances P and Q --------------------------------
     Vs = smooth["V_smooth"]
     Vss = smooth["V_ss"]
-    Tmat_new = _construct_state_matrices(A_new, B_new)
-    d = k1 * k2 * Pord
-    r = k1 * k2
+    if i1_factors:
+        Tmat_new = np.eye(k1 * k2)
+        d = r = k1 * k2
+    else:
+        Tmat_new = _construct_state_matrices(A_new, B_new)
+        d = k1 * k2 * Pord
+        r = k1 * k2
     
     P_new = np.zeros((k1, k1))
     Q_new = np.zeros((k2, k2))
     count = 0
-    for t in range(Pord, Tn):
-        x_t = np.concatenate([F[t - l].reshape(-1) for l in range(Pord)])
-        x_tm1 = np.concatenate([F[t - 1 - l].reshape(-1) for l in range(Pord)])
-        E_tt = Vs[t] + np.outer(x_t, x_t)
-        E_tm1 = Vs[t - 1] + np.outer(x_tm1, x_tm1)
-        E_cross = Vss[t - 1] + np.outer(x_t, x_tm1)
-        W_full = (
-            E_tt
-            - E_cross @ Tmat_new.T
-            - Tmat_new @ E_cross.T
-            + Tmat_new @ E_tm1 @ Tmat_new.T
-        )
-        W = W_full[:r, :r]
-        for i1 in range(k1):
-            idx1 = slice(i1 * k2, (i1 + 1) * k2)
-            for i2 in range(k1):
-                idx2 = slice(i2 * k2, (i2 + 1) * k2)
-                P_new[i1, i2] += np.trace(W[idx1, idx2])
-        for j1 in range(k2):
-            idxc1 = [i * k2 + j1 for i in range(k1)]
-            for j2 in range(k2):
-                idxc2 = [i * k2 + j2 for i in range(k1)]
-                Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
-        count += 1
+        if i1_factors:
+        for t in range(1, Tn):
+            diff = F[t] - F[t - 1]
+            diff_vec = diff.reshape(-1)
+            W = (
+                Vs[t][:r, :r]
+                + Vs[t - 1][:r, :r]
+                - Vss[t - 1][:r, :r]
+                - Vss[t - 1][:r, :r].T
+                + np.outer(diff_vec, diff_vec)
+            )
+            for i1 in range(k1):
+                idx1 = slice(i1 * k2, (i1 + 1) * k2)
+                for i2 in range(k1):
+                    idx2 = slice(i2 * k2, (i2 + 1) * k2)
+                    P_new[i1, i2] += np.trace(W[idx1, idx2])
+            for j1 in range(k2):
+                idxc1 = [i * k2 + j1 for i in range(k1)]
+                for j2 in range(k2):
+                    idxc2 = [i * k2 + j2 for i in range(k1)]
+                    Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
+            count += 1
+    else:
+        for t in range(Pord, Tn):
+            x_t = np.concatenate([F[t - l].reshape(-1) for l in range(Pord)])
+            x_tm1 = np.concatenate([F[t - 1 - l].reshape(-1) for l in range(Pord)])
+            E_tt = Vs[t] + np.outer(x_t, x_t)
+            E_tm1 = Vs[t - 1] + np.outer(x_tm1, x_tm1)
+            E_cross = Vss[t - 1] + np.outer(x_t, x_tm1)
+            W_full = (
+                E_tt
+                - E_cross @ Tmat_new.T
+                - Tmat_new @ E_cross.T
+                + Tmat_new @ E_tm1 @ Tmat_new.T
+            )
+            W = W_full[:r, :r]
+            for i1 in range(k1):
+                idx1 = slice(i1 * k2, (i1 + 1) * k2)
+                for i2 in range(k1):
+                    idx2 = slice(i2 * k2, (i2 + 1) * k2)
+                    P_new[i1, i2] += np.trace(W[idx1, idx2])
+            for j1 in range(k2):
+                idxc1 = [i * k2 + j1 for i in range(k1)]
+                for j2 in range(k2):
+                    idxc2 = [i * k2 + j2 for i in range(k1)]
+                    Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
+            count += 1
     denom = max(1, count)
     P_new /= denom * k2
     Q_new /= denom * k1
@@ -525,6 +569,7 @@ def em_step_dmfm(
         mask,
         new_params["P"],
         new_params["Q"],
+        i1_factors=i1_factors,
     )
     new_params["F"] = smooth_new["F_smooth"]
     ll = smooth_new["loglik"]
@@ -549,6 +594,7 @@ def fit_dmfm_em(
     tol: float = 1e-4,
     mask: np.ndarray | None = None,
     nonstationary: bool = False,
+    i1_factors: bool = False,
 ) -> dict:
     """Fit a dynamic matrix factor model using the EM algorithm.
 
@@ -569,6 +615,8 @@ def fit_dmfm_em(
     nonstationary : bool, optional
         If ``True`` keep the MAR process close to a random walk and do not
         re-estimate the MAR coefficients.
+    i1_factors : bool, optional
+        If ``True`` model the latent factors as an I(1) process.
     
     Returns
     -------
@@ -584,7 +632,9 @@ def fit_dmfm_em(
     ll_diff_trace: list[float] = []
     last_ll = -np.inf
     for it in range(max_iter):
-        params, diff, ll = em_step_dmfm(Y, params, mask, nonstationary)
+        params, diff, ll = em_step_dmfm(
+            Y, params, mask, nonstationary, i1_factors=i1_factors
+        )
         ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
         diff_trace.append(diff)
         ll_diff_trace.append(ll_change)
