@@ -6,6 +6,7 @@ __all__ = [
     "initialize_dmfm",
     "_construct_state_matrices",
     "kalman_smoother_dmfm",
+    "qml_loglik_dmfm",
     "em_step_dmfm",
     "fit_dmfm_em",
 ]
