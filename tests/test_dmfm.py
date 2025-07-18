@@ -363,3 +363,26 @@ def test_select_dmfm_rank_baing():
     k1, k2 = KPOKPCH.select_dmfm_rank(Y, max_k=3, method="bai-ng")
     assert 1 <= k1 <= 3
     assert 1 <= k2 <= 3
+
+
+def test_kalman_smoother_i1():
+    Y = generate_data(T=5)
+    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
+    res = KPOKPCH.kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+        i1_factors=True,
+    )
+    assert res["F_smooth"].shape == (Y.shape[0], 1, 1)
+
+
+def test_fit_dmfm_em_i1_runs():
+    Y = generate_data(T=6)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3, i1_factors=True)
+    assert params["F"].shape == (Y.shape[0], 1, 1)
+    assert len(params["loglik"]) >= 1
