@@ -1,6 +1,10 @@
 import numpy as np
 import pytest
 
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import KPOKPCH
 
 
@@ -350,6 +354,13 @@ def test_construct_state_matrix_known_kronecker():
     Tmat = KPOKPCH._construct_state_matrices(A, B)
     assert Tmat.shape == (1, 1)
     assert np.allclose(Tmat[0, 0], 2)
+
+
+def test_construct_state_matrices_phi():
+    Phi = [np.array([[0.5]]), np.array([[0.2]])]
+    Tmat = KPOKPCH._construct_state_matrices(None, None, Phi=Phi, kronecker_only=True)
+    expected = np.array([[0.5, 0.2], [1.0, 0.0]])
+    assert np.allclose(Tmat, expected)
 
 
 def test_select_dmfm_rank_basic():
