@@ -463,3 +463,30 @@ def test_fit_dmfm_em_qml_opt():
     Y = generate_data(T=4)
     res = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, use_qml_opt=True)
     assert res["R"].shape == (Y.shape[1], 1)
+
+
+def test_identify_dmfm_trends_shapes():
+    rng = np.random.default_rng(0)
+    F = rng.normal(size=(8, 2, 1))
+    out = KPOKPCH.identify_dmfm_trends(F)
+    r = out["r"]
+    assert 0 <= r <= 2
+    assert out["F_trend"].shape == (F.shape[0], r)
+    assert out["F_cycle"].shape[0] == F.shape[0]
+
+
+def test_fit_dmfm_em_trend_decomp():
+    Y = generate_data(T=6)
+    res = KPOKPCH.fit_dmfm_em(
+        Y,
+        1,
+        1,
+        1,
+        max_iter=2,
+        i1_factors=True,
+        return_trend_decomp=True,
+    )
+    td = res.get("trend_decomposition")
+    assert td is not None
+    assert td["F_trend"].shape[0] == Y.shape[0]
+    
