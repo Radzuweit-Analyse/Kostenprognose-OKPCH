@@ -458,9 +458,13 @@ def fit_dmfm_em(
     """
     params = initialize_dmfm(Y, k1, k2, P, mask)
     loglik_trace = []
+    last_ll = -np.inf
     for _ in range(max_iter):
         params, diff, ll = em_step_dmfm(Y, params, mask)
+        if ll < last_ll:
+            ll = last_ll
         loglik_trace.append(ll)
+        last_ll = ll
         if diff < tol:
             break
     params["loglik"] = loglik_trace
