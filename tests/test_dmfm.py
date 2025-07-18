@@ -10,7 +10,7 @@ def generate_data(T=4, p1=3, p2=2):
 def test_initialize_dmfm_shapes():
     Y = generate_data()
     k1, k2, P = 2, 1, 1
-    params = initialize_dmfm(Y, k1, k2, P)
+    params = KPOKPCH.initialize_dmfm(Y, k1, k2, P)
     assert params["R"].shape == (Y.shape[1], k1)
     assert params["C"].shape == (Y.shape[2], k2)
     assert len(params["A"]) == P
@@ -28,15 +28,15 @@ def test_initialize_dmfm_shapes():
 def test_construct_state_matrices_basic():
     A = [np.array([[0.2]]), np.array([[0.3]])]
     B = [np.array([[0.4]]), np.array([[0.5]])]
-    Tmat = _construct_state_matrices(A, B)
+    Tmat = KPOKPCH._construct_state_matrices(A, B)
     expected = np.array([[0.08, 0.15], [1.0, 0.0]])
     assert np.allclose(Tmat, expected)
 
 
 def test_kalman_smoother_shapes():
     Y = generate_data(T=6)
-    params = initialize_dmfm(Y, 2, 2, 1)
-    result = kalman_smoother_dmfm(
+    params = KPOKPCH.initialize_dmfm(Y, 2, 2, 1)
+    result = KPOKPCH.kalman_smoother_dmfm(
         Y,
         params["R"],
         params["C"],
@@ -53,8 +53,8 @@ def test_kalman_smoother_shapes():
 
 def test_em_step_dmfm_update():
     Y = generate_data(T=5)
-    params = initialize_dmfm(Y, 2, 2, 1)
-    new_params, diff, ll = em_step_dmfm(Y, params)
+    params = KPOKPCH.initialize_dmfm(Y, 2, 2, 1)
+    new_params, diff, ll = KPOKPCH.em_step_dmfm(Y, params)
     assert isinstance(new_params, dict)
     assert diff >= 0
     assert np.isfinite(ll)
@@ -64,7 +64,7 @@ def test_em_step_dmfm_update():
 
 def test_fit_dmfm_em_runs():
     Y = generate_data(T=5)
-    params = fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
     assert "loglik" in params
     assert len(params["loglik"]) >= 1
     assert params["R"].shape == (Y.shape[1], 1)
