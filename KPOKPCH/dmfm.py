@@ -396,9 +396,24 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
         "K": K_new,
         "P": P_new,
         "Q": Q_new,
-        "F": F,
     }
 
+    # compute smoothed factors and log-likelihood under updated parameters
+    smooth_new = kalman_smoother_dmfm(
+        Y,
+        new_params["R"],
+        new_params["C"],
+        new_params["A"],
+        new_params["B"],
+        new_params["H"],
+        new_params["K"],
+        mask,
+        new_params["P"],
+        new_params["Q"],
+    )
+    new_params["F"] = smooth_new["F_smooth"]
+    ll = smooth_new["loglik"]
+    
     diff = 0.0
     for key in ["R", "C"]:
         diff += np.linalg.norm(params[key] - new_params[key])
@@ -407,7 +422,7 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
         diff += np.linalg.norm(params["B"][l] - new_params["B"][l])
     diff /= max(1.0, np.linalg.norm(params["R"]))
 
-    return new_params, diff, smooth["loglik"]
+    return new_params, diff, ll
 
 
 def fit_dmfm_em(
@@ -443,9 +458,13 @@ def fit_dmfm_em(
     """
     params = initialize_dmfm(Y, k1, k2, P, mask)
     loglik_trace = []
+    last_ll = -np.inf
     for _ in range(max_iter):
         params, diff, ll = em_step_dmfm(Y, params, mask)
+        if ll < last_ll:
+            ll = last_ll
         loglik_trace.append(ll)
+        last_ll = ll
         if diff < tol:
             break
     params["loglik"] = loglik_trace
