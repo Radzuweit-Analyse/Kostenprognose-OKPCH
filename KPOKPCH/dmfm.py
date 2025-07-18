@@ -44,14 +44,19 @@ def initialize_dmfm(
     if mask is None:
         mask = np.ones_like(Y, dtype=bool)
 
-    # simple mean imputation for missing entries ----------------------------
+    # if a fully observed subpanel exists use it, otherwise mean impute -----
     Y_imp = Y.copy()
-    col_mean = np.nanmean(Y_imp.reshape(T, -1), axis=0)
+    full_rows = np.all(mask, axis=(1, 2))
+    if np.any(full_rows):
+        Y_bar = Y[full_rows].mean(axis=0)
+        col_mean = Y[full_rows].reshape(-1, p1 * p2).mean(axis=0)
+    else:
+        Y_bar = np.nanmean(Y_imp, axis=0)
+        col_mean = np.nanmean(Y_imp.reshape(T, -1), axis=0)
     inds = ~mask.reshape(T, -1)
-    Y_imp.reshape(T, -1)[inds] = col_mean[inds.any(axis=0)]
+    if inds.any():
+        Y_imp.reshape(T, -1)[inds] = col_mean[inds.any(axis=0)]
 
-    # average matrix and SVD -------------------------------------------------
-    Y_bar = np.nanmean(Y_imp, axis=0)
     U, _, Vt = svd(Y_bar, full_matrices=False)
     R = U[:, :k1]
     C = Vt.T[:, :k2]
@@ -241,6 +246,24 @@ def kalman_smoother_dmfm(
         "F_pred": xp[:, :r].reshape(Tn, k1, k2),
         "loglik": float(loglik),
     }
+
+
+def qml_loglik_dmfm(
+    Y: np.ndarray,
+    R: np.ndarray,
+    C: np.ndarray,
+    A: list[np.ndarray],
+    B: list[np.ndarray],
+    H: np.ndarray,
+    K: np.ndarray,
+    mask: np.ndarray | None = None,
+    Pmat: np.ndarray | None = None,
+    Qmat: np.ndarray | None = None,
+) -> float:
+    """Return QML log-likelihood using the Kalman filter."""
+
+    out = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat, Qmat)
+    return float(out["loglik"])
 
 
 def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) -> tuple[dict, float, float]:
