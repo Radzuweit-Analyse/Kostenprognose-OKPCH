@@ -328,6 +328,184 @@ def qml_loglik_dmfm(
     return float(out["loglik"])
 
 
+def pack_dmfm_parameters(
+    R: np.ndarray,
+    C: np.ndarray,
+    A: list[np.ndarray],
+    B: list[np.ndarray],
+    H: np.ndarray,
+    K: np.ndarray,
+    P: np.ndarray,
+    Q: np.ndarray,
+) -> np.ndarray:
+    """Return flattened parameter vector for optimization."""
+
+    parts = [R.ravel(), C.ravel()]
+    parts.extend(a.ravel() for a in A)
+    parts.extend(b.ravel() for b in B)
+    parts.extend([H.ravel(), K.ravel(), P.ravel(), Q.ravel()])
+    return np.concatenate(parts)
+
+
+def unpack_dmfm_parameters(
+    vec: np.ndarray,
+    shape_info: dict,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    list[np.ndarray],
+    list[np.ndarray],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """Unpack flattened vector into DMFM parameter matrices."""
+
+    p1 = shape_info["p1"]
+    k1 = shape_info["k1"]
+    p2 = shape_info["p2"]
+    k2 = shape_info["k2"]
+    Pord = shape_info["P"]
+
+    idx = 0
+    R = vec[idx : idx + p1 * k1].reshape(p1, k1)
+    idx += p1 * k1
+    C = vec[idx : idx + p2 * k2].reshape(p2, k2)
+    idx += p2 * k2
+
+    A = []
+    for _ in range(Pord):
+        A.append(vec[idx : idx + k1 * k1].reshape(k1, k1))
+        idx += k1 * k1
+
+    B = []
+    for _ in range(Pord):
+        B.append(vec[idx : idx + k2 * k2].reshape(k2, k2))
+        idx += k2 * k2
+
+    H = vec[idx : idx + p1 * p1].reshape(p1, p1)
+    idx += p1 * p1
+    K = vec[idx : idx + p2 * p2].reshape(p2, p2)
+    idx += p2 * p2
+    Pmat = vec[idx : idx + k1 * k1].reshape(k1, k1)
+    idx += k1 * k1
+    Qmat = vec[idx : idx + k2 * k2].reshape(k2, k2)
+
+    def _sym_posdef(M: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+        M = 0.5 * (M + M.T)
+        try:
+            w, V = np.linalg.eigh(M)
+            w = np.clip(w, eps, None)
+            return (V * w) @ V.T
+        except np.linalg.LinAlgError:
+            return np.eye(M.shape[0]) * eps
+
+    H = _sym_posdef(H)
+    K = _sym_posdef(K)
+    Pmat = _sym_posdef(Pmat)
+    Qmat = _sym_posdef(Qmat)
+
+    return R, C, A, B, H, K, Pmat, Qmat
+
+
+def qml_objective_dmfm(
+    params_vec: np.ndarray,
+    Y: np.ndarray,
+    shape_info: dict,
+    mask: np.ndarray | None = None,
+) -> float:
+    """Return negative QML log-likelihood for optimization."""
+
+    R, C, A, B, H, K, Pmat, Qmat = unpack_dmfm_parameters(params_vec, shape_info)
+    out = kalman_smoother_dmfm(
+        Y,
+        R,
+        C,
+        A,
+        B,
+        H,
+        K,
+        mask,
+        Pmat,
+        Qmat,
+    )
+    return -float(out["loglik"])
+
+
+def optimize_qml_dmfm(
+    Y: np.ndarray,
+    k1: int,
+    k2: int,
+    P: int,
+    mask: np.ndarray | None = None,
+    init_params: dict | None = None,
+) -> dict:
+    """Optimize the QML objective for the DMFM."""
+
+    try:
+        from scipy.optimize import minimize
+    except Exception:  # pragma: no cover - fallback when scipy unavailable
+        minimize = None
+
+    Y = np.asarray(Y, dtype=float)
+    Tn, p1, p2 = Y.shape
+
+    if init_params is None:
+        init_params = initialize_dmfm(Y, k1, k2, P, mask)
+
+    shape_info = {"p1": p1, "k1": k1, "p2": p2, "k2": k2, "P": P}
+
+    x0 = pack_dmfm_parameters(
+        init_params["R"],
+        init_params["C"],
+        init_params["A"],
+        init_params["B"],
+        init_params["H"],
+        init_params["K"],
+        init_params.get("P", np.eye(k1)),
+        init_params.get("Q", np.eye(k2)),
+    )
+
+    obj = lambda v: qml_objective_dmfm(v, Y, shape_info, mask)
+    if minimize is not None:
+        res = minimize(obj, x0, method="L-BFGS-B")
+        opt_x = res.x
+    else:
+        warnings.warn("scipy not installed - skipping optimization")
+        res = None
+        opt_x = x0
+
+    R, C, A, B, H, K, Pmat, Qmat = unpack_dmfm_parameters(opt_x, shape_info)
+    smooth = kalman_smoother_dmfm(
+        Y,
+        R,
+        C,
+        A,
+        B,
+        H,
+        K,
+        mask,
+        Pmat,
+        Qmat,
+    )
+
+    return {
+        "R": R,
+        "C": C,
+        "A": A,
+        "B": B,
+        "H": H,
+        "K": K,
+        "P": Pmat,
+        "Q": Qmat,
+        "F": smooth["F_smooth"],
+        "loglik": [smooth["loglik"]],
+        "optimization_result": res,
+        "frozen": True,
+    }
+
+
 def em_step_dmfm(
     Y: np.ndarray,
     params: dict,
@@ -679,6 +857,7 @@ def fit_dmfm_em(
     nonstationary: bool = False,
     i1_factors: bool = False,
     return_se: bool = False,
+    use_qml_opt: bool = False,
     *,
     kronecker_only: bool = False,
 ) -> dict:
@@ -715,6 +894,21 @@ def fit_dmfm_em(
     dict
         Fitted parameters, smoothed factors and log-likelihood trace.
     """
+    if use_qml_opt:
+        res = optimize_qml_dmfm(
+            Y,
+            k1,
+            k2,
+            P,
+            mask=mask,
+            init_params=None,
+        )
+        if return_se:
+            res["standard_errors"] = compute_standard_errors_dmfm(
+                Y, res["R"], res["C"], res["F"], mask
+            )
+        return res
+    
     params = initialize_dmfm(Y, k1, k2, P, mask)
     if nonstationary:
         params["A"] = [np.eye(k1) for _ in range(P)]
