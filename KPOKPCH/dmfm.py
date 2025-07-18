@@ -298,6 +298,21 @@ def em_step_dmfm(
         Updated parameter dictionary, the relative parameter change and the
         log-likelihood value.
     """
+    if params.get("frozen"):
+        ll = qml_loglik_dmfm(
+            Y,
+            params["R"],
+            params["C"],
+            params["A"],
+            params["B"],
+            params["H"],
+            params["K"],
+            mask,
+            params.get("P"),
+            params.get("Q"),
+        )
+        return params, 0.0, ll
+    
     R = params["R"]
     C = params["C"]
     A = params["A"]
@@ -492,6 +507,70 @@ def em_step_dmfm(
     return new_params, diff, ll
 
 
+def fit_dmfm_em(
+    Y: np.ndarray,
+    k1: int,
+    k2: int,
+    P: int,
+    max_iter: int = 100,
+    tol: float = 1e-4,
+    mask: np.ndarray | None = None,
+    nonstationary: bool = False,
+) -> dict:
+    """Fit a dynamic matrix factor model using the EM algorithm.
+
+    Parameters
+    ----------
+    Y : array_like
+        Data array of shape ``(T, p1, p2)``.
+    k1, k2 : int
+        Number of row and column factors.
+    P : int
+        Order of the MAR dynamics.
+    max_iter : int, optional
+        Maximum number of EM iterations.
+    tol : float, optional
+        Convergence threshold based on relative parameter change.
+    mask : ndarray or None, optional
+        Observation mask, ``True`` for observed entries.
+    nonstationary : bool, optional
+        If ``True`` keep the MAR process close to a random walk and do not
+        re-estimate the MAR coefficients.
+    
+    Returns
+    -------
+    dict
+        Fitted parameters, smoothed factors and log-likelihood trace.
+    """
+    params = initialize_dmfm(Y, k1, k2, P, mask)
+    if nonstationary:
+        params["A"] = [np.eye(k1) for _ in range(P)]
+        params["B"] = [np.eye(k2) for _ in range(P)]
+    loglik_trace: list[float] = []
+    diff_trace: list[float] = []
+    ll_diff_trace: list[float] = []
+    last_ll = -np.inf
+    for it in range(max_iter):
+        params, diff, ll = em_step_dmfm(Y, params, mask, nonstationary)
+        ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
+        diff_trace.append(diff)
+        ll_diff_trace.append(ll_change)
+        if it > 0 and ll_change < -1e-6:
+            warnings.warn(
+                f"Log-likelihood decreased by {ll_change:.3e} at iteration {it}."
+            )
+            break
+        loglik_trace.append(ll)
+        last_ll = ll
+        if diff < tol:
+            break
+    params["loglik"] = loglik_trace
+    params["param_diff"] = diff_trace
+    params["ll_diff"] = ll_diff_trace
+    params["frozen"] = True
+    return params
+
+
 def select_dmfm_rank(
     Y: np.ndarray,
     max_k: int = 10,
@@ -564,66 +643,3 @@ def select_dmfm_rank(
     k1 = max(1, min(k1, p1))
     k2 = max(1, min(k2, p2))
     return k1, k2
-
-
-def fit_dmfm_em(
-    Y: np.ndarray,
-    k1: int,
-    k2: int,
-    P: int,
-    max_iter: int = 100,
-    tol: float = 1e-4,
-    mask: np.ndarray | None = None,
-    nonstationary: bool = False,
-) -> dict:
-    """Fit a dynamic matrix factor model using the EM algorithm.
-
-    Parameters
-    ----------
-    Y : array_like
-        Data array of shape ``(T, p1, p2)``.
-    k1, k2 : int
-        Number of row and column factors.
-    P : int
-        Order of the MAR dynamics.
-    max_iter : int, optional
-        Maximum number of EM iterations.
-    tol : float, optional
-        Convergence threshold based on relative parameter change.
-    mask : ndarray or None, optional
-        Observation mask, ``True`` for observed entries.
-    nonstationary : bool, optional
-        If ``True`` keep the MAR process close to a random walk and do not
-        re-estimate the MAR coefficients.
-    
-    Returns
-    -------
-    dict
-        Fitted parameters, smoothed factors and log-likelihood trace.
-    """
-    params = initialize_dmfm(Y, k1, k2, P, mask)
-    if nonstationary:
-        params["A"] = [np.eye(k1) for _ in range(P)]
-        params["B"] = [np.eye(k2) for _ in range(P)]
-    loglik_trace: list[float] = []
-    diff_trace: list[float] = []
-    ll_diff_trace: list[float] = []
-    last_ll = -np.inf
-    for it in range(max_iter):
-        params, diff, ll = em_step_dmfm(Y, params, mask, nonstationary)
-        ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
-        diff_trace.append(diff)
-        ll_diff_trace.append(ll_change)
-        if it > 0 and ll_change < -1e-6:
-            warnings.warn(
-                f"Log-likelihood decreased by {ll_change:.3e} at iteration {it}."
-            )
-            break
-        loglik_trace.append(ll)
-        last_ll = ll
-        if diff < tol:
-            break
-    params["loglik"] = loglik_trace
-    params["param_diff"] = diff_trace
-    params["ll_diff"] = ll_diff_trace
-    return params
