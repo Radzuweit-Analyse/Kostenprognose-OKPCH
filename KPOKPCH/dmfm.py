@@ -85,11 +85,14 @@ def initialize_dmfm(
     Pmat = np.eye(k1)
     Qmat = np.eye(k2)
 
+    Phi = [np.kron(B[l], A[l]) for l in range(P)]
+    
     return {
         "R": R,
         "C": C,
         "A": A,
         "B": B,
+        "Phi": Phi,
         "H": H,
         "K": K,
         "P": Pmat,
@@ -125,6 +128,9 @@ def kalman_smoother_dmfm(
     Pmat: np.ndarray | None = None,
     Qmat: np.ndarray | None = None,
     i1_factors: bool = False,
+    *,
+    Phi: list[np.ndarray] | None = None,
+    kronecker_only: bool = False,
 ) -> dict:
     """Kalman smoother for the dynamic matrix factor model.
 
@@ -156,7 +162,7 @@ def kalman_smoother_dmfm(
     k1 = R.shape[1]
     k2 = C.shape[1]
     r = k1 * k2
-    P = len(A)
+    P = len(Phi) if kronecker_only and Phi is not None else len(A)
     d = r if i1_factors else r * P
     
     if mask is None:
@@ -165,13 +171,24 @@ def kalman_smoother_dmfm(
     Pmat = np.eye(k1) if Pmat is None else Pmat
     Qmat = np.eye(k2) if Qmat is None else Qmat
 
-    Phi = [np.kron(B[l], A[l]) for l in range(P)]
+    if kronecker_only:
+        if Phi is None:
+            raise ValueError("Phi must be provided when kronecker_only=True")
+        Phi_list = Phi
+    else:
+        Phi_list = [np.kron(B[l], A[l]) for l in range(P)]
     Qx = np.kron(Qmat, Pmat)
     if i1_factors:
         Tmat = np.eye(r)
         Q_full = Qx
     else:
-        Tmat = _construct_state_matrices(A, B)
+        if kronecker_only:
+            Tmat = np.zeros((d, d))
+            Tmat[:r, : r * P] = np.hstack(Phi_list)
+            if P > 1:
+                Tmat[r:, :-r] = np.eye(r * (P - 1))
+        else:
+            Tmat = _construct_state_matrices(A, B)
         Q_full = np.zeros((d, d))
         Q_full[:r, :r] = Qx
 
@@ -287,11 +304,26 @@ def qml_loglik_dmfm(
     Pmat: np.ndarray | None = None,
     Qmat: np.ndarray | None = None,
     i1_factors: bool = False,
+    *,
+    Phi: list[np.ndarray] | None = None,
+    kronecker_only: bool = False,
 ) -> float:
     """Return QML log-likelihood using the Kalman filter."""
 
     out = kalman_smoother_dmfm(
-        Y, R, C, A, B, H, K, mask, Pmat, Qmat, i1_factors=i1_factors
+        Y,
+        R,
+        C,
+        A,
+        B,
+        H,
+        K,
+        mask,
+        Pmat,
+        Qmat,
+        i1_factors=i1_factors,
+        Phi=Phi,
+        kronecker_only=kronecker_only,
     )
     return float(out["loglik"])
 
@@ -302,6 +334,8 @@ def em_step_dmfm(
     mask: np.ndarray | None = None,
     nonstationary: bool = False,
     i1_factors: bool = False,
+    *,
+    kronecker_only: bool = False,
 ) -> tuple[dict, float, float]:
     """Perform one EM iteration for the DMFM.
 
@@ -319,6 +353,9 @@ def em_step_dmfm(
         state innovations.
     i1_factors : bool, optional
         If ``True`` treat the latent factors as an I(1) process.
+    kronecker_only : bool, optional
+        If ``True`` estimate and use MAR dynamics directly for ``vec(F_t)`` via
+        stacked Kronecker matrices ``Phi``.
     
     Returns
     -------
@@ -339,6 +376,8 @@ def em_step_dmfm(
             params.get("P"),
             params.get("Q"),
             i1_factors=i1_factors,
+            Phi=params.get("Phi"),
+            kronecker_only=kronecker_only,
         )
         return params, 0.0, ll
     
@@ -355,7 +394,19 @@ def em_step_dmfm(
     if nonstationary:
         scale = 10.0
     smooth = kalman_smoother_dmfm(
-        Y, R, C, A, B, H, K, mask, Pmat * scale, Qmat * scale, i1_factors=i1_factors
+        Y,
+        R,
+        C,
+        A,
+        B,
+        H,
+        K,
+        mask,
+        Pmat * scale,
+        Qmat * scale,
+        i1_factors=i1_factors,
+        Phi=params.get("Phi"),
+        kronecker_only=kronecker_only,
     )
     F = smooth["F_smooth"]
     Tn, p1, p2 = Y.shape
@@ -407,45 +458,70 @@ def em_step_dmfm(
     for t in range(Tn):
         F[t] = R_fac @ F[t] @ C_fac.T
     
-    # Update MAR matrices A and B -----------------------------------------
+    # Update MAR matrices or Phi -----------------------------------------
     if nonstationary:
         A_new = A
         B_new = B
+        Phi_new = params.get("Phi")
     else:
-        A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
-        B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
+        if kronecker_only:
+            r_vec = k1 * k2
+            X_rows = []
+            Y_rows = []
+            for t in range(Pord, Tn):
+                X_rows.append(
+                    np.concatenate([F[t - l - 1].reshape(-1) for l in range(Pord)])
+                )
+                Y_rows.append(F[t].reshape(-1))
+            if X_rows:
+                Xmat = np.vstack(X_rows)
+                Ymat = np.vstack(Y_rows)
+                XTX = Xmat.T @ Xmat
+                lam = 1e-6
+                coeff = np.linalg.solve(XTX + lam * np.eye(XTX.shape[0]), Xmat.T @ Ymat)
+                Phi_new = [
+                    coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)
+                ]
+            else:
+                Phi_new = params.get("Phi")
+            A_new = A
+            B_new = B
+        else:
+            A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
+            B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
 
-        for ell in range(Pord):
-            A_num = np.zeros((k1, k1))
-            A_den = np.zeros((k1, k1))
-            B_num = np.zeros((k2, k2))
-            B_den = np.zeros((k2, k2))
-            for t in range(ell + 1, Tn):
-                F_pred_other = np.zeros((k1, k2))
-                for j in range(Pord):
-                    if j == ell:
-                        continue
-                    if t - j - 1 < 0:
-                        continue
-                    F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
-                Y_res = F[t] - F_pred_other
-                X_A = F[t - ell - 1] @ B[ell].T
-                A_num += Y_res @ X_A.T
-                A_den += X_A @ X_A.T
-                X_B = F[t - ell - 1].T @ A[ell].T
-                B_num += Y_res.T @ X_B.T
-                B_den += X_B @ X_B.T
-            A_est = A_num @ inv(A_den + 1e-8 * np.eye(k1))
-            B_est = B_num @ inv(B_den + 1e-8 * np.eye(k2))
-            if np.linalg.norm(A_den) < 1e-4:
-                A_est = A[ell]
-            if np.linalg.norm(B_den) < 1e-4:
-                B_est = B[ell]
-            A_est = np.clip(A_est, -0.99, 0.99)
-            B_est = np.clip(B_est, -0.99, 0.99)
-            A_new[ell] = A_est
-            B_new[ell] = B_est
-
+            for ell in range(Pord):
+                A_num = np.zeros((k1, k1))
+                A_den = np.zeros((k1, k1))
+                B_num = np.zeros((k2, k2))
+                B_den = np.zeros((k2, k2))
+                for t in range(ell + 1, Tn):
+                    F_pred_other = np.zeros((k1, k2))
+                    for j in range(Pord):
+                        if j == ell:
+                            continue
+                        if t - j - 1 < 0:
+                            continue
+                        F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+                    Y_res = F[t] - F_pred_other
+                    X_A = F[t - ell - 1] @ B[ell].T
+                    A_num += Y_res @ X_A.T
+                    A_den += X_A @ X_A.T
+                    X_B = F[t - ell - 1].T @ A[ell].T
+                    B_num += Y_res.T @ X_B.T
+                    B_den += X_B @ X_B.T
+                A_est = A_num @ inv(A_den + 1e-8 * np.eye(k1))
+                B_est = B_num @ inv(B_den + 1e-8 * np.eye(k2))
+                if np.linalg.norm(A_den) < 1e-4:
+                    A_est = A[ell]
+                if np.linalg.norm(B_den) < 1e-4:
+                    B_est = B[ell]
+                A_est = np.clip(A_est, -0.99, 0.99)
+                B_est = np.clip(B_est, -0.99, 0.99)
+                A_new[ell] = A_est
+                B_new[ell] = B_est
+            Phi_new = [np.kron(B_new[l], A_new[l]) for l in range(Pord)]
+    
     # Update innovation covariances P and Q --------------------------------
     Vs = smooth["V_smooth"]
     Vss = smooth["V_ss"]
@@ -453,9 +529,17 @@ def em_step_dmfm(
         Tmat_new = np.eye(k1 * k2)
         d = r = k1 * k2
     else:
-        Tmat_new = _construct_state_matrices(A_new, B_new)
-        d = k1 * k2 * Pord
-        r = k1 * k2
+        if kronecker_only:
+            d = k1 * k2 * Pord
+            r = k1 * k2
+            Tmat_new = np.zeros((d, d))
+            Tmat_new[:r, : r * Pord] = np.hstack(Phi_new)
+            if Pord > 1:
+                Tmat_new[r:, :-r] = np.eye(r * (Pord - 1))
+        else:
+            Tmat_new = _construct_state_matrices(A_new, B_new)
+            d = k1 * k2 * Pord
+            r = k1 * k2
     
     P_new = np.zeros((k1, k1))
     Q_new = np.zeros((k2, k2))
@@ -544,6 +628,7 @@ def em_step_dmfm(
         "C": C_new,
         "A": A_new,
         "B": B_new,
+        "Phi": Phi_new,
         "H": H_new,
         "K": K_new,
         "P": P_new,
@@ -563,6 +648,8 @@ def em_step_dmfm(
         new_params["P"],
         new_params["Q"],
         i1_factors=i1_factors,
+        Phi=new_params.get("Phi"),
+        kronecker_only=kronecker_only,
     )
     new_params["F"] = smooth_new["F_smooth"]
     ll = smooth_new["loglik"]
@@ -571,8 +658,11 @@ def em_step_dmfm(
     for key in ["R", "C"]:
         diff += np.linalg.norm(params[key] - new_params[key])
     for l in range(Pord):
-        diff += np.linalg.norm(params["A"][l] - new_params["A"][l])
-        diff += np.linalg.norm(params["B"][l] - new_params["B"][l])
+        if kronecker_only:
+            diff += np.linalg.norm(params["Phi"][l] - Phi_new[l])
+        else:
+            diff += np.linalg.norm(params["A"][l] - new_params["A"][l])
+            diff += np.linalg.norm(params["B"][l] - new_params["B"][l])
     diff /= max(1.0, np.linalg.norm(params["R"]))
 
     return new_params, diff, ll
@@ -589,6 +679,8 @@ def fit_dmfm_em(
     nonstationary: bool = False,
     i1_factors: bool = False,
     return_se: bool = False,
+    *,
+    kronecker_only: bool = False,
 ) -> dict:
     """Fit a dynamic matrix factor model using the EM algorithm.
 
@@ -614,6 +706,9 @@ def fit_dmfm_em(
     return_se : bool, optional
         If ``True`` the dictionary additionally contains a ``"standard_errors"``
         field with standard errors for ``R`` and ``C``.
+    kronecker_only : bool, optional
+        Estimate the MAR dynamics for ``vec(F_t)`` directly using stacked
+        transition matrices ``Phi``.
     
     Returns
     -------
@@ -630,7 +725,12 @@ def fit_dmfm_em(
     last_ll = -np.inf
     for it in range(max_iter):
         params, diff, ll = em_step_dmfm(
-            Y, params, mask, nonstationary, i1_factors=i1_factors
+            Y,
+            params,
+            mask,
+            nonstationary,
+            i1_factors=i1_factors,
+            kronecker_only=kronecker_only,
         )
         ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
         diff_trace.append(diff)
