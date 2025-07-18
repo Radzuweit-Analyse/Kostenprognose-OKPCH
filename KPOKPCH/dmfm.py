@@ -270,7 +270,12 @@ def qml_loglik_dmfm(
     return float(out["loglik"])
 
 
-def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) -> tuple[dict, float, float]:
+def em_step_dmfm(
+    Y: np.ndarray,
+    params: dict,
+    mask: np.ndarray | None = None,
+    nonstationary: bool = False,
+) -> tuple[dict, float, float]:
     """Perform one EM iteration for the DMFM.
 
     Parameters
@@ -282,7 +287,10 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
         previous EM steps.
     mask : ndarray or None, optional
         Observation mask of the same shape as ``Y``.
-
+    nonstationary : bool, optional
+        If ``True`` keep MAR coefficients fixed at identity and allow larger
+        state innovations.
+    
     Returns
     -------
     tuple
@@ -298,7 +306,10 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
     Pmat = params.get("P", np.eye(R.shape[1]))
     Qmat = params.get("Q", np.eye(C.shape[1]))
 
-    smooth = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat, Qmat)
+    scale = 1.0
+    if nonstationary:
+        scale = 10.0
+    smooth = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat * scale, Qmat * scale)
     F = smooth["F_smooth"]
     Tn, p1, p2 = Y.shape
     k1 = R.shape[1]
@@ -344,31 +355,35 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
             C_new[j] = C[j]
 
     # Update MAR matrices A and B -----------------------------------------
-    A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
-    B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
+    if nonstationary:
+        A_new = A
+        B_new = B
+    else:
+        A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
+        B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
 
-    for ell in range(Pord):
-        A_num = np.zeros((k1, k1))
-        A_den = np.zeros((k1, k1))
-        B_num = np.zeros((k2, k2))
-        B_den = np.zeros((k2, k2))
-        for t in range(ell + 1, Tn):
-            F_pred_other = np.zeros((k1, k2))
-            for j in range(Pord):
-                if j == ell:
-                    continue
-                if t - j - 1 < 0:
-                    continue
-                F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
-            Y_res = F[t] - F_pred_other
-            X_A = F[t - ell - 1] @ B[ell].T
-            A_num += Y_res @ X_A.T
-            A_den += X_A @ X_A.T
-            X_B = F[t - ell - 1].T @ A[ell].T
-            B_num += Y_res.T @ X_B.T
-            B_den += X_B @ X_B.T
-        A_new[ell] = A_num @ inv(A_den + 1e-8 * np.eye(k1))
-        B_new[ell] = B_num @ inv(B_den + 1e-8 * np.eye(k2))
+        for ell in range(Pord):
+            A_num = np.zeros((k1, k1))
+            A_den = np.zeros((k1, k1))
+            B_num = np.zeros((k2, k2))
+            B_den = np.zeros((k2, k2))
+            for t in range(ell + 1, Tn):
+                F_pred_other = np.zeros((k1, k2))
+                for j in range(Pord):
+                    if j == ell:
+                        continue
+                    if t - j - 1 < 0:
+                        continue
+                    F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+                Y_res = F[t] - F_pred_other
+                X_A = F[t - ell - 1] @ B[ell].T
+                A_num += Y_res @ X_A.T
+                A_den += X_A @ X_A.T
+                X_B = F[t - ell - 1].T @ A[ell].T
+                B_num += Y_res.T @ X_B.T
+                B_den += X_B @ X_B.T
+            A_new[ell] = A_num @ inv(A_den + 1e-8 * np.eye(k1))
+            B_new[ell] = B_num @ inv(B_den + 1e-8 * np.eye(k2))
 
     # Update innovation covariances P and Q --------------------------------
     Vs = smooth["V_smooth"]
@@ -484,6 +499,7 @@ def fit_dmfm_em(
     max_iter: int = 100,
     tol: float = 1e-4,
     mask: np.ndarray | None = None,
+    nonstationary: bool = False,
 ) -> dict:
     """Fit a dynamic matrix factor model using the EM algorithm.
 
@@ -501,17 +517,23 @@ def fit_dmfm_em(
         Convergence threshold based on relative parameter change.
     mask : ndarray or None, optional
         Observation mask, ``True`` for observed entries.
-
+    nonstationary : bool, optional
+        If ``True`` keep the MAR process close to a random walk and do not
+        re-estimate the MAR coefficients.
+    
     Returns
     -------
     dict
         Fitted parameters, smoothed factors and log-likelihood trace.
     """
     params = initialize_dmfm(Y, k1, k2, P, mask)
+    if nonstationary:
+        params["A"] = [np.eye(k1) for _ in range(P)]
+        params["B"] = [np.eye(k2) for _ in range(P)]
     loglik_trace = []
     last_ll = -np.inf
     for _ in range(max_iter):
-        params, diff, ll = em_step_dmfm(Y, params, mask)
+        params, diff, ll = em_step_dmfm(Y, params, mask, nonstationary)
         if ll < last_ll:
             ll = last_ll
         loglik_trace.append(ll)
