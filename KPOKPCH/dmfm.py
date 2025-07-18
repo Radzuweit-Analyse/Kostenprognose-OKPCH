@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.linalg import inv, svd
+import warnings
 
 
 def initialize_dmfm(
@@ -44,14 +45,21 @@ def initialize_dmfm(
     if mask is None:
         mask = np.ones_like(Y, dtype=bool)
 
-    # simple mean imputation for missing entries ----------------------------
+    # if a fully observed subpanel exists use it, otherwise mean impute -----
     Y_imp = Y.copy()
-    col_mean = np.nanmean(Y_imp.reshape(T, -1), axis=0)
+    full_rows = np.all(mask, axis=(1, 2))
+    if np.any(full_rows):
+        Y_bar = Y[full_rows].mean(axis=0)
+        col_mean = Y[full_rows].reshape(-1, p1 * p2).mean(axis=0)
+    else:
+        Y_bar = np.nanmean(Y_imp, axis=0)
+        col_mean = np.nanmean(Y_imp.reshape(T, -1), axis=0)
     inds = ~mask.reshape(T, -1)
-    Y_imp.reshape(T, -1)[inds] = col_mean[inds.any(axis=0)]
+    if inds.any():
+        Y_imp_flat = Y_imp.reshape(T, -1)
+        row_idx, col_idx = np.where(inds)
+        Y_imp_flat[row_idx, col_idx] = col_mean[col_idx]
 
-    # average matrix and SVD -------------------------------------------------
-    Y_bar = np.nanmean(Y_imp, axis=0)
     U, _, Vt = svd(Y_bar, full_matrices=False)
     R = U[:, :k1]
     C = Vt.T[:, :k2]
@@ -75,6 +83,8 @@ def initialize_dmfm(
             K += np.outer(resid[t, i, :], resid[t, i, :])
     H /= max(1, T * p2)
     K /= max(1, T * p1)
+    H = np.diag(np.diag(H))
+    K = np.diag(np.diag(K))
 
     # innovation covariances ------------------------------------------------
     Pmat = np.eye(k1)
@@ -243,7 +253,30 @@ def kalman_smoother_dmfm(
     }
 
 
-def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) -> tuple[dict, float, float]:
+def qml_loglik_dmfm(
+    Y: np.ndarray,
+    R: np.ndarray,
+    C: np.ndarray,
+    A: list[np.ndarray],
+    B: list[np.ndarray],
+    H: np.ndarray,
+    K: np.ndarray,
+    mask: np.ndarray | None = None,
+    Pmat: np.ndarray | None = None,
+    Qmat: np.ndarray | None = None,
+) -> float:
+    """Return QML log-likelihood using the Kalman filter."""
+
+    out = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat, Qmat)
+    return float(out["loglik"])
+
+
+def em_step_dmfm(
+    Y: np.ndarray,
+    params: dict,
+    mask: np.ndarray | None = None,
+    nonstationary: bool = False,
+) -> tuple[dict, float, float]:
     """Perform one EM iteration for the DMFM.
 
     Parameters
@@ -255,13 +288,31 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
         previous EM steps.
     mask : ndarray or None, optional
         Observation mask of the same shape as ``Y``.
-
+    nonstationary : bool, optional
+        If ``True`` keep MAR coefficients fixed at identity and allow larger
+        state innovations.
+    
     Returns
     -------
     tuple
         Updated parameter dictionary, the relative parameter change and the
         log-likelihood value.
     """
+    if params.get("frozen"):
+        ll = qml_loglik_dmfm(
+            Y,
+            params["R"],
+            params["C"],
+            params["A"],
+            params["B"],
+            params["H"],
+            params["K"],
+            mask,
+            params.get("P"),
+            params.get("Q"),
+        )
+        return params, 0.0, ll
+    
     R = params["R"]
     C = params["C"]
     A = params["A"]
@@ -271,7 +322,10 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
     Pmat = params.get("P", np.eye(R.shape[1]))
     Qmat = params.get("Q", np.eye(C.shape[1]))
 
-    smooth = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat, Qmat)
+    scale = 1.0
+    if nonstationary:
+        scale = 10.0
+    smooth = kalman_smoother_dmfm(Y, R, C, A, B, H, K, mask, Pmat * scale, Qmat * scale)
     F = smooth["F_smooth"]
     Tn, p1, p2 = Y.shape
     k1 = R.shape[1]
@@ -317,45 +371,71 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
             C_new[j] = C[j]
 
     # Update MAR matrices A and B -----------------------------------------
-    A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
-    B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
+    if nonstationary:
+        A_new = A
+        B_new = B
+    else:
+        A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
+        B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
 
-    for ell in range(Pord):
-        A_num = np.zeros((k1, k1))
-        A_den = np.zeros((k1, k1))
-        B_num = np.zeros((k2, k2))
-        B_den = np.zeros((k2, k2))
-        for t in range(ell + 1, Tn):
-            F_pred_other = np.zeros((k1, k2))
-            for j in range(Pord):
-                if j == ell:
-                    continue
-                if t - j - 1 < 0:
-                    continue
-                F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
-            Y_res = F[t] - F_pred_other
-            X_A = F[t - ell - 1] @ B[ell].T
-            A_num += Y_res @ X_A.T
-            A_den += X_A @ X_A.T
-            X_B = F[t - ell - 1].T @ A[ell].T
-            B_num += Y_res.T @ X_B.T
-            B_den += X_B @ X_B.T
-        A_new[ell] = A_num @ inv(A_den + 1e-8 * np.eye(k1))
-        B_new[ell] = B_num @ inv(B_den + 1e-8 * np.eye(k2))
+        for ell in range(Pord):
+            A_num = np.zeros((k1, k1))
+            A_den = np.zeros((k1, k1))
+            B_num = np.zeros((k2, k2))
+            B_den = np.zeros((k2, k2))
+            for t in range(ell + 1, Tn):
+                F_pred_other = np.zeros((k1, k2))
+                for j in range(Pord):
+                    if j == ell:
+                        continue
+                    if t - j - 1 < 0:
+                        continue
+                    F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+                Y_res = F[t] - F_pred_other
+                X_A = F[t - ell - 1] @ B[ell].T
+                A_num += Y_res @ X_A.T
+                A_den += X_A @ X_A.T
+                X_B = F[t - ell - 1].T @ A[ell].T
+                B_num += Y_res.T @ X_B.T
+                B_den += X_B @ X_B.T
+            A_new[ell] = A_num @ inv(A_den + 1e-8 * np.eye(k1))
+            B_new[ell] = B_num @ inv(B_den + 1e-8 * np.eye(k2))
 
     # Update innovation covariances P and Q --------------------------------
-    U = np.zeros_like(F[Pord:])
-    for t in range(Pord, Tn):
-        F_pred = np.zeros((k1, k2))
-        for j in range(Pord):
-            F_pred += A_new[j] @ F[t - j - 1] @ B_new[j].T
-        U[t - Pord] = F[t] - F_pred
+    Vs = smooth["V_smooth"]
+    Vss = smooth["V_ss"]
+    Tmat_new = _construct_state_matrices(A_new, B_new)
+    d = k1 * k2 * Pord
+    r = k1 * k2
+    
     P_new = np.zeros((k1, k1))
     Q_new = np.zeros((k2, k2))
-    for u in U:
-        P_new += u @ u.T
-        Q_new += u.T @ u
-    denom = max(1, len(U))
+    count = 0
+    for t in range(Pord, Tn):
+        x_t = np.concatenate([F[t - l].reshape(-1) for l in range(Pord)])
+        x_tm1 = np.concatenate([F[t - 1 - l].reshape(-1) for l in range(Pord)])
+        E_tt = Vs[t] + np.outer(x_t, x_t)
+        E_tm1 = Vs[t - 1] + np.outer(x_tm1, x_tm1)
+        E_cross = Vss[t - 1] + np.outer(x_t, x_tm1)
+        W_full = (
+            E_tt
+            - E_cross @ Tmat_new.T
+            - Tmat_new @ E_cross.T
+            + Tmat_new @ E_tm1 @ Tmat_new.T
+        )
+        W = W_full[:r, :r]
+        for i1 in range(k1):
+            idx1 = slice(i1 * k2, (i1 + 1) * k2)
+            for i2 in range(k1):
+                idx2 = slice(i2 * k2, (i2 + 1) * k2)
+                P_new[i1, i2] += np.trace(W[idx1, idx2])
+        for j1 in range(k2):
+            idxc1 = [i * k2 + j1 for i in range(k1)]
+            for j2 in range(k2):
+                idxc2 = [i * k2 + j2 for i in range(k1)]
+                Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
+        count += 1
+    denom = max(1, count)
     P_new /= denom * k2
     Q_new /= denom * k1
 
@@ -386,6 +466,8 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
         H_new /= count_H
     if count_K > 0:
         K_new /= count_K
+    H_new = np.diag(np.diag(H_new))
+    K_new = np.diag(np.diag(K_new))
     
     new_params = {
         "R": R_new,
@@ -433,6 +515,7 @@ def fit_dmfm_em(
     max_iter: int = 100,
     tol: float = 1e-4,
     mask: np.ndarray | None = None,
+    nonstationary: bool = False,
 ) -> dict:
     """Fit a dynamic matrix factor model using the EM algorithm.
 
@@ -450,22 +533,113 @@ def fit_dmfm_em(
         Convergence threshold based on relative parameter change.
     mask : ndarray or None, optional
         Observation mask, ``True`` for observed entries.
-
+    nonstationary : bool, optional
+        If ``True`` keep the MAR process close to a random walk and do not
+        re-estimate the MAR coefficients.
+    
     Returns
     -------
     dict
         Fitted parameters, smoothed factors and log-likelihood trace.
     """
     params = initialize_dmfm(Y, k1, k2, P, mask)
-    loglik_trace = []
+    if nonstationary:
+        params["A"] = [np.eye(k1) for _ in range(P)]
+        params["B"] = [np.eye(k2) for _ in range(P)]
+    loglik_trace: list[float] = []
+    diff_trace: list[float] = []
+    ll_diff_trace: list[float] = []
     last_ll = -np.inf
-    for _ in range(max_iter):
-        params, diff, ll = em_step_dmfm(Y, params, mask)
-        if ll < last_ll:
-            ll = last_ll
+    for it in range(max_iter):
+        params, diff, ll = em_step_dmfm(Y, params, mask, nonstationary)
+        ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
+        diff_trace.append(diff)
+        ll_diff_trace.append(ll_change)
+        if it > 0 and ll_change < -1e-6:
+            warnings.warn(
+                f"Log-likelihood decreased by {ll_change:.3e} at iteration {it}."
+            )
+            break
         loglik_trace.append(ll)
         last_ll = ll
         if diff < tol:
             break
     params["loglik"] = loglik_trace
+    params["param_diff"] = diff_trace
+    params["ll_diff"] = ll_diff_trace
+    params["frozen"] = True
     return params
+
+
+def select_dmfm_rank(
+    Y: np.ndarray,
+    max_k: int = 10,
+    method: str = "ratio",
+) -> tuple[int, int]:
+    """Return suitable ``(k1, k2)`` values for a DMFM.
+
+    The function inspects the eigenvalues of the row and column
+    covariance matrices. ``method='ratio'`` selects the factor numbers
+    by the eigenvalue ratio rule while ``method='bai-ng'`` applies the
+    Bai--Ng information criterion.
+
+    Parameters
+    ----------
+    Y : array_like
+        Data array of shape ``(T, p1, p2)``.
+    max_k : int, optional
+        Maximum number of row or column factors considered.
+    method : {{'ratio', 'bai-ng'}}, optional
+        Selection procedure to use.
+
+    Returns
+    -------
+    tuple[int, int]
+        Suggested number of row and column factors.
+    """
+
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim != 3:
+        raise ValueError("Y must be a 3D array")
+    T, p1, p2 = Y.shape
+
+    S_row = np.zeros((p1, p1))
+    S_col = np.zeros((p2, p2))
+    for t in range(T):
+        S_row += Y[t] @ Y[t].T
+        S_col += Y[t].T @ Y[t]
+    if p2 > 0:
+        S_row /= T * p2
+    if p1 > 0:
+        S_col /= T * p1
+
+    eval_row = np.sort(np.linalg.eigvalsh(S_row))[::-1]
+    eval_col = np.sort(np.linalg.eigvalsh(S_col))[::-1]
+
+    def _select(evals: np.ndarray, N: int, TT: int) -> int:
+        evals = np.maximum(evals, 0.0)
+        if method == "ratio":
+            if evals.size <= 1:
+                return 1
+            kmax = min(max_k, evals.size - 1)
+            ratios = evals[:kmax] / (evals[1 : kmax + 1] + 1e-12)
+            return int(np.argmax(ratios)) + 1
+        elif method in {"bai-ng", "bai", "ic"}:
+            kmax = min(max_k, evals.size)
+            ics = []
+            for r in range(kmax + 1):
+                if r >= evals.size:
+                    ics.append(np.inf)
+                    continue
+                resid = np.mean(evals[r:])
+                penalty = r * (N + TT) / (N * TT) * np.log(N * TT / (N + TT))
+                ics.append(np.log(resid + 1e-12) + penalty)
+            return int(np.argmin(ics))
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    k1 = _select(eval_row, p1, T * p2)
+    k2 = _select(eval_col, p2, T * p1)
+    k1 = max(1, min(k1, p1))
+    k2 = max(1, min(k2, p2))
+    return k1, k2
