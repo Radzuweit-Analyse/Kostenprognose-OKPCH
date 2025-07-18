@@ -287,7 +287,7 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
             m = mask[t, i, :] if mask is not None else np.ones(p2, dtype=bool)
             if not m.any():
                 continue
-            X = (F[t] @ C.T)[m, :]  # (sum m) x k1
+            X = (F[t] @ C.T).T[m, :]  # (sum m) x k1
             y_stack.append(Y[t, i, m])
             X_stack.append(X)
         if X_stack:
