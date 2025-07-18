@@ -588,6 +588,7 @@ def fit_dmfm_em(
     mask: np.ndarray | None = None,
     nonstationary: bool = False,
     i1_factors: bool = False,
+    return_se: bool = False,
 ) -> dict:
     """Fit a dynamic matrix factor model using the EM algorithm.
 
@@ -610,6 +611,9 @@ def fit_dmfm_em(
         re-estimate the MAR coefficients.
     i1_factors : bool, optional
         If ``True`` model the latent factors as an I(1) process.
+    return_se : bool, optional
+        If ``True`` the dictionary additionally contains a ``"standard_errors"``
+        field with standard errors for ``R`` and ``C``.
     
     Returns
     -------
@@ -644,7 +648,106 @@ def fit_dmfm_em(
     params["param_diff"] = diff_trace
     params["ll_diff"] = ll_diff_trace
     params["frozen"] = True
+    if return_se:
+        params["standard_errors"] = compute_standard_errors_dmfm(
+            Y, params["R"], params["C"], params["F"], mask
+        )
     return params
+
+
+def compute_standard_errors_dmfm(
+    Y: np.ndarray,
+    R: np.ndarray,
+    C: np.ndarray,
+    F: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> dict:
+    """Return approximate standard errors for ``R`` and ``C``.
+
+    Parameters
+    ----------
+    Y : ndarray
+        Observed array ``(T, p1, p2)``.
+    R, C : ndarray
+        Estimated loading matrices.
+    F : ndarray
+        Smoothed factor path ``(T, k1, k2)``.
+    mask : ndarray or None, optional
+        Observation mask where ``True`` indicates observed entries.
+
+    Returns
+    -------
+    dict
+        Dictionary with entries ``se_R`` and ``se_C`` containing the standard
+        errors. Additionally ``ci_R`` and ``ci_C`` provide 95% confidence
+        intervals.
+    """
+
+    Y = np.asarray(Y, dtype=float)
+    R = np.asarray(R, dtype=float)
+    C = np.asarray(C, dtype=float)
+    F = np.asarray(F, dtype=float)
+
+    Tn, p1, p2 = Y.shape
+    k1 = R.shape[1]
+    k2 = C.shape[1]
+
+    if mask is None:
+        mask = np.ones_like(Y, dtype=bool)
+
+    se_R = np.zeros_like(R)
+    se_C = np.zeros_like(C)
+
+    # standard errors for R -------------------------------------------------
+    for i in range(p1):
+        rss = 0.0
+        n_obs = 0
+        XtX_i = np.zeros((k1, k1))
+        for t in range(Tn):
+            m = mask[t, i]
+            X_t = (F[t] @ C.T).T[m]
+            y = Y[t, i, m]
+            if y.size == 0:
+                continue
+            XtX_i += X_t.T @ X_t
+            pred = X_t @ R[i]
+            resid = y - pred
+            rss += resid @ resid
+            n_obs += y.size
+        if n_obs > k1:
+            sigma2 = rss / max(1.0, n_obs - k1)
+        else:
+            sigma2 = 0.0
+        cov = sigma2 * inv(XtX_i + 1e-8 * np.eye(k1))
+        se_R[i] = np.sqrt(np.diag(cov))
+
+    # standard errors for C -------------------------------------------------
+    for j in range(p2):
+        rss = 0.0
+        n_obs = 0
+        ZtZ_j = np.zeros((k2, k2))
+        for t in range(Tn):
+            m = mask[t, :, j]
+            Z_t = (R @ F[t])[m]
+            y = Y[t, m, j]
+            if y.size == 0:
+                continue
+            ZtZ_j += Z_t.T @ Z_t
+            pred = Z_t @ C[j]
+            resid = y - pred
+            rss += resid @ resid
+            n_obs += y.size
+        if n_obs > k2:
+            sigma2 = rss / max(1.0, n_obs - k2)
+        else:
+            sigma2 = 0.0
+        cov = sigma2 * inv(ZtZ_j + 1e-8 * np.eye(k2))
+        se_C[j] = np.sqrt(np.diag(cov))
+
+    ci_R = np.stack([R - 1.96 * se_R, R + 1.96 * se_R], axis=-1)
+    ci_C = np.stack([C - 1.96 * se_C, C + 1.96 * se_C], axis=-1)
+
+    return {"se_R": se_R, "se_C": se_C, "ci_R": ci_R, "ci_C": ci_C}
 
 
 def select_dmfm_rank(
