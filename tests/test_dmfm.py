@@ -387,3 +387,17 @@ def test_fit_dmfm_em_i1_runs():
     params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3, i1_factors=True)
     assert params["F"].shape == (Y.shape[0], 1, 1)
     assert len(params["loglik"]) >= 1
+
+
+def test_select_dmfm_qml_basic():
+    Y = generate_data(T=4, p1=3, p2=2)
+    k1, k2, P = KPOKPCH.select_dmfm_qml(Y, max_k=1, max_P=1)
+    assert isinstance(k1, int) and isinstance(k2, int) and isinstance(P, int)
+    assert k1 == 1 and k2 == 1 and P == 1
+
+
+def test_select_dmfm_qml_search_P():
+    Y = generate_data(T=5, p1=2, p2=2)
+    k1, k2, P = KPOKPCH.select_dmfm_qml(Y, max_k=1, max_P=2, criterion="aic")
+    assert isinstance(k1, int) and isinstance(k2, int) and isinstance(P, int)
+    assert k1 == 1 and k2 == 1 and 1 <= P <= 2
