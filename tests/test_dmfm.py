@@ -412,3 +412,30 @@ def test_standard_errors_shapes():
     assert se["se_C"].shape == params["C"].shape
     assert se["ci_R"].shape == params["R"].shape + (2,)
     assert se["ci_C"].shape == params["C"].shape + (2,)
+
+
+def test_kronecker_only_mode():
+    Y = generate_data(T=5)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, kronecker_only=True)
+    assert "Phi" in params
+    assert len(params["Phi"]) == 1
+    assert params["Phi"][0].shape == (1, 1)
+    assert params["F"].shape[0] == Y.shape[0]
+
+
+def test_kalman_smoother_kronecker_only():
+    Y = generate_data(T=4)
+    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
+    Phi = [np.kron(params["B"][0], params["A"][0])]
+    res = KPOKPCH.kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+        Phi=Phi,
+        kronecker_only=True,
+    )
+    assert res["F_smooth"].shape == (Y.shape[0], 1, 1)
