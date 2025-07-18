@@ -371,18 +371,40 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
         B_new[ell] = B_num @ inv(B_den + 1e-8 * np.eye(k2))
 
     # Update innovation covariances P and Q --------------------------------
-    U = np.zeros_like(F[Pord:])
-    for t in range(Pord, Tn):
-        F_pred = np.zeros((k1, k2))
-        for j in range(Pord):
-            F_pred += A_new[j] @ F[t - j - 1] @ B_new[j].T
-        U[t - Pord] = F[t] - F_pred
+    Vs = smooth["V_smooth"]
+    Vss = smooth["V_ss"]
+    Tmat_new = _construct_state_matrices(A_new, B_new)
+    d = k1 * k2 * Pord
+    r = k1 * k2
+    
     P_new = np.zeros((k1, k1))
     Q_new = np.zeros((k2, k2))
-    for u in U:
-        P_new += u @ u.T
-        Q_new += u.T @ u
-    denom = max(1, len(U))
+    count = 0
+    for t in range(Pord, Tn):
+        x_t = np.concatenate([F[t - l].reshape(-1) for l in range(Pord)])
+        x_tm1 = np.concatenate([F[t - 1 - l].reshape(-1) for l in range(Pord)])
+        E_tt = Vs[t] + np.outer(x_t, x_t)
+        E_tm1 = Vs[t - 1] + np.outer(x_tm1, x_tm1)
+        E_cross = Vss[t - 1] + np.outer(x_t, x_tm1)
+        W_full = (
+            E_tt
+            - E_cross @ Tmat_new.T
+            - Tmat_new @ E_cross.T
+            + Tmat_new @ E_tm1 @ Tmat_new.T
+        )
+        W = W_full[:r, :r]
+        for i1 in range(k1):
+            idx1 = slice(i1 * k2, (i1 + 1) * k2)
+            for i2 in range(k1):
+                idx2 = slice(i2 * k2, (i2 + 1) * k2)
+                P_new[i1, i2] += np.trace(W[idx1, idx2])
+        for j1 in range(k2):
+            idxc1 = [i * k2 + j1 for i in range(k1)]
+            for j2 in range(k2):
+                idxc2 = [i * k2 + j2 for i in range(k1)]
+                Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
+        count += 1
+    denom = max(1, count)
     P_new /= denom * k2
     Q_new /= denom * k1
 
