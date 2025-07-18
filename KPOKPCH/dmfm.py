@@ -459,7 +459,7 @@ def em_step_dmfm(
     P_new = np.zeros((k1, k1))
     Q_new = np.zeros((k2, k2))
     count = 0
-        if i1_factors:
+    if i1_factors:
         for t in range(1, Tn):
             diff = F[t] - F[t - 1]
             diff_vec = diff.reshape(-1)
