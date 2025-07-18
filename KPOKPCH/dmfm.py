@@ -211,6 +211,7 @@ def kalman_smoother_dmfm(
             R_t = R_full[np.ix_(idx, idx)]
             y_obs = y_vec[idx]
             S = Z @ V_prior @ Z.T + R_t
+            S += 1e-8 * np.eye(S.shape[0])
             K_gain = V_prior @ Z.T @ inv(S)
             x_post = x_prior + K_gain @ (y_obs - Z @ x_prior)
             V_post = V_prior - K_gain @ Z @ V_prior
@@ -234,7 +235,7 @@ def kalman_smoother_dmfm(
     J = np.zeros((Tn - 1, d, d))
 
     for t in range(Tn - 2, -1, -1):
-        J[t] = Pf[t] @ Tmat.T @ inv(Pp[t + 1])
+        J[t] = Pf[t] @ Tmat.T @ inv(Pp[t + 1] + 1e-8 * np.eye(d))
         xs[t] = xf[t] + J[t] @ (xs[t + 1] - xp[t + 1])
         Vs[t] = Pf[t] + J[t] @ (Vs[t + 1] - Pp[t + 1]) @ J[t].T
 
@@ -422,8 +423,16 @@ def em_step_dmfm(
                 X_B = F[t - ell - 1].T @ A[ell].T
                 B_num += Y_res.T @ X_B.T
                 B_den += X_B @ X_B.T
-            A_new[ell] = A_num @ inv(A_den + 1e-8 * np.eye(k1))
-            B_new[ell] = B_num @ inv(B_den + 1e-8 * np.eye(k2))
+            A_est = A_num @ inv(A_den + 1e-8 * np.eye(k1))
+            B_est = B_num @ inv(B_den + 1e-8 * np.eye(k2))
+            if np.linalg.norm(A_den) < 1e-4:
+                A_est = A[ell]
+            if np.linalg.norm(B_den) < 1e-4:
+                B_est = B[ell]
+            A_est = np.clip(A_est, -0.99, 0.99)
+            B_est = np.clip(B_est, -0.99, 0.99)
+            A_new[ell] = A_est
+            B_new[ell] = B_est
 
     # Update innovation covariances P and Q --------------------------------
     Vs = smooth["V_smooth"]
