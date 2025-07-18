@@ -719,3 +719,71 @@ def select_dmfm_rank(
     k1 = max(1, min(k1, p1))
     k2 = max(1, min(k2, p2))
     return k1, k2
+
+
+def select_dmfm_qml(
+    Y: np.ndarray,
+    max_k: int = 5,
+    max_P: int = 2,
+    criterion: str = "bic",
+    mask: np.ndarray | None = None,
+) -> tuple[int, int, int]:
+    """Select (k1, k2, P) using QML-based information criteria.
+
+    Parameters
+    ----------
+    Y : array_like
+        Observation array ``(T, p1, p2)``.
+    max_k : int, optional
+        Maximum factor numbers considered for rows and columns.
+    max_P : int, optional
+        Maximum MAR order to consider.
+    criterion : {'aic', 'bic'}, optional
+        Information criterion to minimize.
+    mask : ndarray or None, optional
+        Binary mask indicating observed entries.
+
+    Returns
+    -------
+    tuple[int, int, int]
+        Selected ``(k1, k2, P)`` configuration.
+    """
+
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim != 3:
+        raise ValueError("Y must be a 3D array")
+
+    T, p1, p2 = Y.shape
+    best_ic = np.inf
+    best_cfg = (1, 1, 1)
+    criterion = criterion.lower()
+
+    for k1 in range(1, max_k + 1):
+        for k2 in range(1, max_k + 1):
+            for P in range(1, max_P + 1):
+                try:
+                    res = fit_dmfm_em(Y, k1, k2, P, max_iter=25, mask=mask)
+                except Exception:
+                    continue
+                if not res.get("loglik"):
+                    continue
+                loglik = res["loglik"][-1]
+                n_params = (
+                    p1 * k1
+                    + p2 * k2
+                    + P * (k1**2 + k2**2)
+                    + p1
+                    + p2
+                    + k1 * (k1 + 1) / 2
+                    + k2 * (k2 + 1) / 2
+                )
+                n_params = int(round(n_params))
+                if criterion == "aic":
+                    ic = -2.0 * loglik + 2.0 * n_params
+                else:
+                    ic = -2.0 * loglik + np.log(T * p1 * p2) * n_params
+                if ic < best_ic:
+                    best_ic = ic
+                    best_cfg = (k1, k2, P)
+
+    return best_cfg
