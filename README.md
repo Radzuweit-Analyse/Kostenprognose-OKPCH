@@ -50,6 +50,24 @@ source("non_linear_main.R")
 
 All scripts expect the quarterly monitoring file `02_Monitoring-des-couts_Serie-temporelle-trimestre.xlsx` in the working directory. The data originates from the Swiss Federal Office of Public Health and is **not distributed** with this repository for licensing reasons. Please obtain the file separately before running the code.
 
+## Python package `KPOKPCH`
+
+The directory `KPOKPCH/` contains a small Python module implementing a Dynamic Matrix Factor Model (DMFM).
+
+### Installation
+
+```bash
+pip install -r requirements.txt
+pip install -e .
+```
+
+### Running the tests
+
+```bash
+pytest
+```
+
+
 ## License
 
 This project is licensed under a proprietary license. See the [LICENSE](LICENSE) file for details.
