@@ -85,7 +85,13 @@ def initialize_dmfm(
     K /= max(1, T * p1)
     H = np.diag(np.diag(H))
     K = np.diag(np.diag(K))
-
+    tr_H = np.trace(H)
+    tr_K = np.trace(K)
+    if tr_H > 0:
+        H *= float(p1) / tr_H
+    if tr_K > 0:
+        K *= float(p2) / tr_K
+    
     # innovation covariances ------------------------------------------------
     Pmat = np.eye(k1)
     Qmat = np.eye(k2)
@@ -486,6 +492,12 @@ def em_step_dmfm(
         K_new /= count_K
     H_new = np.diag(np.diag(H_new))
     K_new = np.diag(np.diag(K_new))
+    tr_H = np.trace(H_new)
+    tr_K = np.trace(K_new)
+    if tr_H > 0:
+        H_new *= float(p1) / tr_H
+    if tr_K > 0:
+        K_new *= float(p2) / tr_K
     
     new_params = {
         "R": R_new,
