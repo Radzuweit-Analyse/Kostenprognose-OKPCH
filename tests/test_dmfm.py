@@ -1,11 +1,5 @@
 import numpy as np
-from dmfm import (
-    initialize_dmfm,
-    _construct_state_matrices,
-    kalman_smoother_dmfm,
-    em_step_dmfm,
-    fit_dmfm_em,
-)
+import KOKPCH
 
 
 def generate_data(T=4, p1=3, p2=2):
