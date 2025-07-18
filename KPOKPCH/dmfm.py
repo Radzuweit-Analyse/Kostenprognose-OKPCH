@@ -383,6 +383,12 @@ def em_step_dmfm(
         else:
             C_new[j] = C[j]
 
+    # Orthonormalize R and C and adjust F ---------------------------------
+    R_new, R_fac = np.linalg.qr(R_new)
+    C_new, C_fac = np.linalg.qr(C_new)
+    for t in range(Tn):
+        F[t] = R_fac @ F[t] @ C_fac.T
+    
     # Update MAR matrices A and B -----------------------------------------
     if nonstationary:
         A_new = A
