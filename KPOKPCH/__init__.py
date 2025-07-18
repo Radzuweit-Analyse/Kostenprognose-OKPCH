@@ -14,14 +14,15 @@ __all__ = [
     "fit_dmfm_em",
     "optimize_qml_dmfm",
     "compute_standard_errors_dmfm",
+    "identify_dmfm_trends",
     "select_dmfm_rank",
     "select_dmfm_qml",
 ]
 
 def __getattr__(name):
-  if name in __all__:
-    module = import_module(".dmfm", __name__)
-    attr = getattr(module, name)
-    globals()[name] = attr
-    return attr
-  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if name in __all__:
+        module = import_module(".dmfm", __name__)
+        attr = getattr(module, name)
+        globals()[name] = attr
+        return attr
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
