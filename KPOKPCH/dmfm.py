@@ -55,7 +55,11 @@ def initialize_dmfm(
         col_mean = np.nanmean(Y_imp.reshape(T, -1), axis=0)
     inds = ~mask.reshape(T, -1)
     if inds.any():
-        Y_imp.reshape(T, -1)[inds] = col_mean[inds.any(axis=0)]
+        Y_imp_flat = Y_imp.reshape(T, -1)
+        for j in range(inds.shape[1]):
+            idx = inds[:, j]
+            if idx.any():
+                Y_imp_flat[idx, j] = col_mean[j]
 
     U, _, Vt = svd(Y_bar, full_matrices=False)
     R = U[:, :k1]
