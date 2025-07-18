@@ -269,3 +269,83 @@ def test_kalman_output_cov_structure():
         assert np.allclose(V, V.T)
         eigvals = np.linalg.eigvalsh(V)
         assert np.all(eigvals >= -1e-8)
+
+
+def generate_data(T=4, p1=3, p2=2):
+    rng = np.random.default_rng(42)
+    return rng.normal(size=(T, p1, p2))
+
+
+def test_initialize_with_nan_values():
+    Y = generate_data(T=5)
+    mask = np.ones_like(Y, dtype=bool)
+    Y[0, 0, 0] = np.nan
+    Y[1, 2, 1] = np.nan
+    mask[0, 0, 0] = False
+    mask[1, 2, 1] = False
+    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1, mask=mask)
+    assert params["F"].shape == (Y.shape[0], 1, 1)
+    assert not np.isnan(params["F"]).any()
+    assert np.all(np.isfinite(params["R"]))
+    assert np.all(np.isfinite(params["C"]))
+
+
+def test_idiosyncratic_covariances_are_diagonal():
+    Y = generate_data(T=6, p1=4, p2=3)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    H = params["H"]
+    K = params["K"]
+    assert np.allclose(H, H.T)
+    assert np.allclose(K, K.T)
+    off_H = H - np.diag(np.diag(H))
+    off_K = K - np.diag(np.diag(K))
+    assert np.all(np.abs(off_H) < 1e-8)
+    assert np.all(np.abs(off_K) < 1e-8)
+    assert np.all(np.diag(H) >= 0)
+    assert np.all(np.diag(K) >= 0)
+
+
+def test_em_step_idempotence_on_convergence():
+    Y = generate_data(T=5)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=15, tol=1e-6)
+    new_params, diff, ll = KPOKPCH.em_step_dmfm(Y, params)
+    assert diff < 1e-5
+
+
+def test_fit_with_high_missingness():
+    Y = generate_data(T=10, p1=5, p2=5)
+    rng = np.random.default_rng(3)
+    mask = rng.random(size=Y.shape) < 0.2
+    mask[0] = True
+    Y = np.where(mask, Y, np.nan)
+    params = KPOKPCH.fit_dmfm_em(Y, 2, 2, 1, max_iter=5, mask=mask)
+    assert np.isfinite(params["loglik"][-1])
+    assert params["F"].shape == (Y.shape[0], 2, 2)
+    assert not np.isnan(params["F"]).any()
+
+
+def test_kalman_output_cov_psd():
+    Y = generate_data(T=5)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    res = KPOKPCH.kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+    )
+    V = res["V_smooth"]
+    for t in range(len(V)):
+        assert np.allclose(V[t], V[t].T)
+        eigvals = np.linalg.eigvalsh(V[t])
+        assert np.all(eigvals >= -1e-8)
+
+
+def test_construct_state_matrix_known_kronecker():
+    A = [np.array([[1]])]
+    B = [np.array([[2]])]
+    Tmat = KPOKPCH._construct_state_matrices(A, B)
+    assert Tmat.shape == (1, 1)
+    assert np.allclose(Tmat[0, 0], 2)
