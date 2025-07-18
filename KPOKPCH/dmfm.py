@@ -19,6 +19,7 @@ def initialize_dmfm(
     k2: int,
     P: int,
     mask: np.ndarray | None = None,
+    method: str = "pe",
 ) -> dict:
     """Return initial parameter guesses for the DMFM.
 
@@ -33,6 +34,10 @@ def initialize_dmfm(
     mask : ndarray or None, optional
         Binary mask with the same shape as ``Y`` where ``True`` indicates an
         observed entry. ``None`` treats all entries as observed.
+    method : {"pe", "svd"}, optional
+        Initialization method. ``"pe"`` uses the projected estimator based on
+        long-run covariance matrices, while ``"svd"`` relies on singular value
+        decomposition of the sample mean matrix.
 
     Returns
     -------
@@ -46,12 +51,41 @@ def initialize_dmfm(
         mask = np.ones_like(Y, dtype=bool)
 
     Y_proj = np.where(mask, Y, 0)
-    Y_bar = np.nanmean(Y_proj, axis=0)
 
-    U, _, Vt = svd(Y_bar, full_matrices=False)
-    R = U[:, :k1]
-    C = Vt.T[:, :k2]
+    if method == "svd":
+        Y_bar = np.nanmean(Y_proj, axis=0)
+        U, _, Vt = svd(Y_bar, full_matrices=False)
+        R = U[:, :k1]
+        C = Vt.T[:, :k2]
+    elif method == "pe":
+        S_row_sum = np.zeros((p1, p1))
+        S_col_sum = np.zeros((p2, p2))
+        count_row = np.zeros((p1, p1))
+        count_col = np.zeros((p2, p2))
 
+        for t in range(T):
+            Y_t = Y_proj[t]
+            M_t = mask[t].astype(float)
+            S_row_sum += Y_t @ Y_t.T
+            S_col_sum += Y_t.T @ Y_t
+            count_row += M_t @ M_t.T
+            count_col += M_t.T @ M_t
+
+        S_row = np.divide(S_row_sum, np.maximum(count_row, 1), where=count_row > 0)
+        S_col = np.divide(S_col_sum, np.maximum(count_col, 1), where=count_col > 0)
+
+        S_row = 0.5 * (S_row + S_row.T)
+        S_col = 0.5 * (S_col + S_col.T)
+
+        evals_row, evecs_row = np.linalg.eigh(S_row)
+        evals_col, evecs_col = np.linalg.eigh(S_col)
+        idx_row = np.argsort(evals_row)[::-1]
+        idx_col = np.argsort(evals_col)[::-1]
+        R = evecs_row[:, idx_row[:k1]]
+        C = evecs_col[:, idx_col[:k2]]
+    else:
+        raise ValueError("method must be 'svd' or 'pe'")
+    
     F = np.empty((T, k1, k2))
     for t in range(T):
         F[t] = R.T @ np.where(mask[t], Y[t], 0) @ C
