@@ -45,20 +45,8 @@ def initialize_dmfm(
     if mask is None:
         mask = np.ones_like(Y, dtype=bool)
 
-    # if a fully observed subpanel exists use it, otherwise mean impute -----
-    Y_imp = Y.copy()
-    full_rows = np.all(mask, axis=(1, 2))
-    if np.any(full_rows):
-        Y_bar = Y[full_rows].mean(axis=0)
-        col_mean = Y[full_rows].reshape(-1, p1 * p2).mean(axis=0)
-    else:
-        Y_bar = np.nanmean(Y_imp, axis=0)
-        col_mean = np.nanmean(Y_imp.reshape(T, -1), axis=0)
-    inds = ~mask.reshape(T, -1)
-    if inds.any():
-        Y_imp_flat = Y_imp.reshape(T, -1)
-        row_idx, col_idx = np.where(inds)
-        Y_imp_flat[row_idx, col_idx] = col_mean[col_idx]
+    Y_proj = np.where(mask, Y, 0)
+    Y_bar = np.nanmean(Y_proj, axis=0)
 
     U, _, Vt = svd(Y_bar, full_matrices=False)
     R = U[:, :k1]
@@ -66,14 +54,14 @@ def initialize_dmfm(
 
     F = np.empty((T, k1, k2))
     for t in range(T):
-        F[t] = R.T @ Y_imp[t] @ C
+        F[t] = R.T @ np.where(mask[t], Y[t], 0) @ C
 
     # initialize MAR coefficients as identity matrices ---------------------
     A = [np.eye(k1) for _ in range(P)]
     B = [np.eye(k2) for _ in range(P)]
     
     # residuals and covariances --------------------------------------------
-    resid = Y_imp - np.einsum("ij,tjk,kl->til", R, F, C.T)
+    resid = Y_proj - np.einsum("ij,tjk,kl->til", R, F, C.T)
     H = np.zeros((p1, p1))
     K = np.zeros((p2, p2))
     for t in range(T):
