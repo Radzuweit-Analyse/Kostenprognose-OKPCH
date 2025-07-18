@@ -439,3 +439,16 @@ def test_kalman_smoother_kronecker_only():
         kronecker_only=True,
     )
     assert res["F_smooth"].shape == (Y.shape[0], 1, 1)
+
+
+def test_optimize_qml_dmfm_runs():
+    Y = generate_data(T=4)
+    res = KPOKPCH.optimize_qml_dmfm(Y, 1, 1, 1)
+    assert res["R"].shape == (Y.shape[1], 1)
+    assert "loglik" in res
+
+
+def test_fit_dmfm_em_qml_opt():
+    Y = generate_data(T=4)
+    res = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, use_qml_opt=True)
+    assert res["R"].shape == (Y.shape[1], 1)
