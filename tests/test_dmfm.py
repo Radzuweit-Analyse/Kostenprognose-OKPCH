@@ -349,3 +349,17 @@ def test_construct_state_matrix_known_kronecker():
     Tmat = KPOKPCH._construct_state_matrices(A, B)
     assert Tmat.shape == (1, 1)
     assert np.allclose(Tmat[0, 0], 2)
+
+
+def test_select_dmfm_rank_basic():
+    Y = generate_data(T=6, p1=3, p2=4)
+    k1, k2 = KPOKPCH.select_dmfm_rank(Y, max_k=2)
+    assert 1 <= k1 <= 2
+    assert 1 <= k2 <= 2
+
+
+def test_select_dmfm_rank_baing():
+    Y = generate_data(T=6, p1=4, p2=3)
+    k1, k2 = KPOKPCH.select_dmfm_rank(Y, max_k=3, method="bai-ng")
+    assert 1 <= k1 <= 3
+    assert 1 <= k2 <= 3
