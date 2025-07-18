@@ -7,9 +7,15 @@ __all__ = [
     "_construct_state_matrices",
     "kalman_smoother_dmfm",
     "qml_loglik_dmfm",
+    "qml_objective_dmfm",
+    "pack_dmfm_parameters",
+    "unpack_dmfm_parameters",
     "em_step_dmfm",
-    "select_dmfm_rank",
     "fit_dmfm_em",
+    "optimize_qml_dmfm",
+    "compute_standard_errors_dmfm",
+    "select_dmfm_rank",
+    "select_dmfm_qml",
 ]
 
 def __getattr__(name):

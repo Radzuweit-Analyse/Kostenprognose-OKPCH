@@ -290,19 +290,20 @@ def test_initialize_with_nan_values():
     assert np.all(np.isfinite(params["C"]))
 
 
-def test_idiosyncratic_covariances_are_diagonal():
+def test_idiosyncratic_covariances_full():
     Y = generate_data(T=6, p1=4, p2=3)
     params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
     H = params["H"]
     K = params["K"]
     assert np.allclose(H, H.T)
     assert np.allclose(K, K.T)
-    off_H = H - np.diag(np.diag(H))
-    off_K = K - np.diag(np.diag(K))
-    assert np.all(np.abs(off_H) < 1e-8)
-    assert np.all(np.abs(off_K) < 1e-8)
-    assert np.all(np.diag(H) >= 0)
-    assert np.all(np.diag(K) >= 0)
+    assert np.all(np.linalg.eigvalsh(H) >= -1e-8)
+    assert np.all(np.linalg.eigvalsh(K) >= -1e-8)
+    # off-diagonal entries should generally be present
+    off_H = np.abs(H - np.diag(np.diag(H)))
+    off_K = np.abs(K - np.diag(np.diag(K)))
+    assert off_H.sum() > 0
+    assert off_K.sum() > 0
 
 
 def test_em_step_idempotence_on_convergence():
@@ -363,3 +364,91 @@ def test_select_dmfm_rank_baing():
     k1, k2 = KPOKPCH.select_dmfm_rank(Y, max_k=3, method="bai-ng")
     assert 1 <= k1 <= 3
     assert 1 <= k2 <= 3
+
+
+def test_kalman_smoother_i1():
+    Y = generate_data(T=5)
+    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
+    res = KPOKPCH.kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+        i1_factors=True,
+    )
+    assert res["F_smooth"].shape == (Y.shape[0], 1, 1)
+
+
+def test_fit_dmfm_em_i1_runs():
+    Y = generate_data(T=6)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3, i1_factors=True)
+    assert params["F"].shape == (Y.shape[0], 1, 1)
+    assert len(params["loglik"]) >= 1
+
+
+def test_select_dmfm_qml_basic():
+    Y = generate_data(T=4, p1=3, p2=2)
+    k1, k2, P = KPOKPCH.select_dmfm_qml(Y, max_k=1, max_P=1)
+    assert isinstance(k1, int) and isinstance(k2, int) and isinstance(P, int)
+    assert k1 == 1 and k2 == 1 and P == 1
+
+
+def test_select_dmfm_qml_search_P():
+    Y = generate_data(T=5, p1=2, p2=2)
+    k1, k2, P = KPOKPCH.select_dmfm_qml(Y, max_k=1, max_P=2, criterion="aic")
+    assert isinstance(k1, int) and isinstance(k2, int) and isinstance(P, int)
+    assert k1 == 1 and k2 == 1 and 1 <= P <= 2
+
+
+def test_standard_errors_shapes():
+    Y = generate_data(T=6)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, return_se=True)
+    se = params.get("standard_errors")
+    assert se is not None
+    assert se["se_R"].shape == params["R"].shape
+    assert se["se_C"].shape == params["C"].shape
+    assert se["ci_R"].shape == params["R"].shape + (2,)
+    assert se["ci_C"].shape == params["C"].shape + (2,)
+
+
+def test_kronecker_only_mode():
+    Y = generate_data(T=5)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, kronecker_only=True)
+    assert "Phi" in params
+    assert len(params["Phi"]) == 1
+    assert params["Phi"][0].shape == (1, 1)
+    assert params["F"].shape[0] == Y.shape[0]
+
+
+def test_kalman_smoother_kronecker_only():
+    Y = generate_data(T=4)
+    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
+    Phi = [np.kron(params["B"][0], params["A"][0])]
+    res = KPOKPCH.kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+        Phi=Phi,
+        kronecker_only=True,
+    )
+    assert res["F_smooth"].shape == (Y.shape[0], 1, 1)
+
+
+def test_optimize_qml_dmfm_runs():
+    Y = generate_data(T=4)
+    res = KPOKPCH.optimize_qml_dmfm(Y, 1, 1, 1)
+    assert res["R"].shape == (Y.shape[1], 1)
+    assert "loglik" in res
+
+
+def test_fit_dmfm_em_qml_opt():
+    Y = generate_data(T=4)
+    res = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, use_qml_opt=True)
+    assert res["R"].shape == (Y.shape[1], 1)
