@@ -56,10 +56,8 @@ def initialize_dmfm(
     inds = ~mask.reshape(T, -1)
     if inds.any():
         Y_imp_flat = Y_imp.reshape(T, -1)
-        for j in range(inds.shape[1]):
-            idx = inds[:, j]
-            if idx.any():
-                Y_imp_flat[idx, j] = col_mean[j]
+        row_idx, col_idx = np.where(inds)
+        Y_imp_flat[row_idx, col_idx] = col_mean[col_idx]
 
     U, _, Vt = svd(Y_bar, full_matrices=False)
     R = U[:, :k1]
