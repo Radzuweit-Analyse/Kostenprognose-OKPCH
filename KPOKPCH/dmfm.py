@@ -82,6 +82,8 @@ def initialize_dmfm(
             K += np.outer(resid[t, i, :], resid[t, i, :])
     H /= max(1, T * p2)
     K /= max(1, T * p1)
+    H = np.diag(np.diag(H))
+    K = np.diag(np.diag(K))
 
     # innovation covariances ------------------------------------------------
     Pmat = np.eye(k1)
@@ -411,6 +413,8 @@ def em_step_dmfm(Y: np.ndarray, params: dict, mask: np.ndarray | None = None) ->
         H_new /= count_H
     if count_K > 0:
         K_new /= count_K
+    H_new = np.diag(np.diag(H_new))
+    K_new = np.diag(np.diag(K_new))
     
     new_params = {
         "R": R_new,
