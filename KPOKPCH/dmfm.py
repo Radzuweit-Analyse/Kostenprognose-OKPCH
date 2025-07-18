@@ -135,8 +135,32 @@ def initialize_dmfm(
     }
 
 
-def _construct_state_matrices(A: list[np.ndarray], B: list[np.ndarray]) -> np.ndarray:
+def _construct_state_matrices(
+    A: list[np.ndarray] | None,
+    B: list[np.ndarray] | None,
+    *,
+    Phi: list[np.ndarray] | None = None,
+    kronecker_only: bool = False,
+) -> np.ndarray:
     """Return VAR(1) transition matrix for stacked MAR(P)."""
+    
+    if kronecker_only:
+        if Phi is None:
+            raise ValueError("Phi must be provided when kronecker_only=True")
+        P = len(Phi)
+        if P == 0:
+            raise ValueError("Phi must contain at least one matrix")
+        r = Phi[0].shape[0]
+        d = r * P
+        Tmat = np.zeros((d, d))
+        Tmat[:r, : r * P] = np.hstack(Phi)
+        if P > 1:
+            Tmat[r:, :-r] = np.eye(r * (P - 1))
+        return Tmat
+
+    if A is None or B is None:
+        raise ValueError("A and B must be provided when kronecker_only=False")
+    
     k1 = A[0].shape[0]
     k2 = B[0].shape[0]
     P = len(A)
@@ -216,13 +240,12 @@ def kalman_smoother_dmfm(
         Tmat = np.eye(r)
         Q_full = Qx
     else:
-        if kronecker_only:
-            Tmat = np.zeros((d, d))
-            Tmat[:r, : r * P] = np.hstack(Phi_list)
-            if P > 1:
-                Tmat[r:, :-r] = np.eye(r * (P - 1))
-        else:
-            Tmat = _construct_state_matrices(A, B)
+        Tmat = _construct_state_matrices(
+            A if not kronecker_only else None,
+            B if not kronecker_only else None,
+            Phi=Phi_list if kronecker_only else None,
+            kronecker_only=kronecker_only,
+        )
         Q_full = np.zeros((d, d))
         Q_full[:r, :r] = Qx
 
@@ -448,6 +471,9 @@ def qml_objective_dmfm(
     Y: np.ndarray,
     shape_info: dict,
     mask: np.ndarray | None = None,
+    *,
+    Phi: list[np.ndarray] | None = None,
+    kronecker_only: bool = False,
 ) -> float:
     """Return negative QML log-likelihood for optimization."""
 
@@ -463,6 +489,8 @@ def qml_objective_dmfm(
         mask,
         Pmat,
         Qmat,
+        Phi=Phi,
+        kronecker_only=kronecker_only,
     )
     return -float(out["loglik"])
 
@@ -744,10 +772,12 @@ def em_step_dmfm(
         if kronecker_only:
             d = k1 * k2 * Pord
             r = k1 * k2
-            Tmat_new = np.zeros((d, d))
-            Tmat_new[:r, : r * Pord] = np.hstack(Phi_new)
-            if Pord > 1:
-                Tmat_new[r:, :-r] = np.eye(r * (Pord - 1))
+            Tmat_new = _construct_state_matrices(
+                None,
+                None,
+                Phi=Phi_new,
+                kronecker_only=True,
+            )
         else:
             Tmat_new = _construct_state_matrices(A_new, B_new)
             d = k1 * k2 * Pord
@@ -943,8 +973,8 @@ def fit_dmfm_em(
             )
         return res
     
-    params = initialize_dmfm(Y, k1, k2, P, mask)
-    if nonstationary:
+    params = initialize_dmfm(Y, k1, k2, P, mask, method="pe")
+    if nonstationary or kronecker_only:
         params["A"] = [np.eye(k1) for _ in range(P)]
         params["B"] = [np.eye(k2) for _ in range(P)]
     loglik_trace: list[float] = []
