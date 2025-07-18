@@ -492,6 +492,80 @@ def em_step_dmfm(
     return new_params, diff, ll
 
 
+def select_dmfm_rank(
+    Y: np.ndarray,
+    max_k: int = 10,
+    method: str = "ratio",
+) -> tuple[int, int]:
+    """Return suitable ``(k1, k2)`` values for a DMFM.
+
+    The function inspects the eigenvalues of the row and column
+    covariance matrices. ``method='ratio'`` selects the factor numbers
+    by the eigenvalue ratio rule while ``method='bai-ng'`` applies the
+    Bai--Ng information criterion.
+
+    Parameters
+    ----------
+    Y : array_like
+        Data array of shape ``(T, p1, p2)``.
+    max_k : int, optional
+        Maximum number of row or column factors considered.
+    method : {{'ratio', 'bai-ng'}}, optional
+        Selection procedure to use.
+
+    Returns
+    -------
+    tuple[int, int]
+        Suggested number of row and column factors.
+    """
+
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim != 3:
+        raise ValueError("Y must be a 3D array")
+    T, p1, p2 = Y.shape
+
+    S_row = np.zeros((p1, p1))
+    S_col = np.zeros((p2, p2))
+    for t in range(T):
+        S_row += Y[t] @ Y[t].T
+        S_col += Y[t].T @ Y[t]
+    if p2 > 0:
+        S_row /= T * p2
+    if p1 > 0:
+        S_col /= T * p1
+
+    eval_row = np.sort(np.linalg.eigvalsh(S_row))[::-1]
+    eval_col = np.sort(np.linalg.eigvalsh(S_col))[::-1]
+
+    def _select(evals: np.ndarray, N: int, TT: int) -> int:
+        evals = np.maximum(evals, 0.0)
+        if method == "ratio":
+            if evals.size <= 1:
+                return 1
+            kmax = min(max_k, evals.size - 1)
+            ratios = evals[:kmax] / (evals[1 : kmax + 1] + 1e-12)
+            return int(np.argmax(ratios)) + 1
+        elif method in {"bai-ng", "bai", "ic"}:
+            kmax = min(max_k, evals.size)
+            ics = []
+            for r in range(kmax + 1):
+                if r >= evals.size:
+                    ics.append(np.inf)
+                    continue
+                resid = np.mean(evals[r:])
+                penalty = r * (N + TT) / (N * TT) * np.log(N * TT / (N + TT))
+                ics.append(np.log(resid + 1e-12) + penalty)
+            return int(np.argmin(ics))
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    k1 = _select(eval_row, p1, T * p2)
+    k2 = _select(eval_col, p2, T * p1)
+    k1 = max(1, min(k1, p1))
+    k2 = max(1, min(k2, p2))
+    return k1, k2
+
+
 def fit_dmfm_em(
     Y: np.ndarray,
     k1: int,
