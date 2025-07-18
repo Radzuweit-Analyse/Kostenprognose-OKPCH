@@ -719,9 +719,7 @@ def em_step_dmfm(
                 XTX = Xmat.T @ Xmat
                 lam = 1e-6
                 coeff = np.linalg.solve(XTX + lam * np.eye(XTX.shape[0]), Xmat.T @ Ymat)
-                Phi_new = [
-                    coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)
-                ]
+                Phi_new = [coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)]
             else:
                 Phi_new = params.get("Phi")
             A_new = A
@@ -922,6 +920,7 @@ def fit_dmfm_em(
     i1_factors: bool = False,
     return_se: bool = False,
     use_qml_opt: bool = False,
+    return_trend_decomp: bool = False,
     *,
     kronecker_only: bool = False,
 ) -> dict:
@@ -949,6 +948,9 @@ def fit_dmfm_em(
     return_se : bool, optional
         If ``True`` the dictionary additionally contains a ``"standard_errors"``
         field with standard errors for ``R`` and ``C``.
+    return_trend_decomp : bool, optional
+        If ``True`` and ``i1_factors`` is ``True``, the output includes a
+        trend decomposition of the latent factors.
     kronecker_only : bool, optional
         Estimate the MAR dynamics for ``vec(F_t)`` directly using stacked
         transition matrices ``Phi``.
@@ -1010,6 +1012,8 @@ def fit_dmfm_em(
         params["standard_errors"] = compute_standard_errors_dmfm(
             Y, params["R"], params["C"], params["F"], mask
         )
+    if i1_factors and return_trend_decomp:
+        params["trend_decomposition"] = identify_dmfm_trends(params["F"])
     return params
 
 
@@ -1106,6 +1110,63 @@ def compute_standard_errors_dmfm(
     ci_C = np.stack([C - 1.96 * se_C, C + 1.96 * se_C], axis=-1)
 
     return {"se_R": se_R, "se_C": se_C, "ci_R": ci_R, "ci_C": ci_C}
+
+
+def identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
+    """Identify common stochastic trends in the factor path.
+
+    Parameters
+    ----------
+    F : ndarray
+        Smoothed factor path of shape ``(T, k1, k2)``.
+    threshold : float, optional
+        Eigenvalue share cutoff determining the number of trends.
+
+    Returns
+    -------
+    dict
+        Dictionary with the number of trends, orthonormal bases for the
+        trend and cycle spaces and the projected components.
+    """
+
+    F = np.asarray(F, dtype=float)
+    if F.ndim != 3:
+        raise ValueError("F must be a 3D array")
+    Tn, k1, k2 = F.shape
+    r_total = k1 * k2
+    if Tn < 2:
+        raise ValueError("F must contain at least two time points")
+
+    X = F.reshape(Tn, r_total)
+    dX = np.diff(X, axis=0)
+    Sigma = dX.T @ dX / max(1, Tn - 1)
+    Sigma = 0.5 * (Sigma + Sigma.T)
+
+    evals, evecs = np.linalg.eigh(Sigma)
+    idx = np.argsort(evals)[::-1]
+    evals = evals[idx]
+    evecs = evecs[:, idx]
+
+    total = np.sum(evals)
+    if total <= 0:
+        r = 0
+    else:
+        cum = np.cumsum(evals) / total
+        r = int(np.searchsorted(cum, threshold) + 1)
+    r = min(r, r_total)
+
+    trend_basis = evecs[:, :r]
+    cycle_basis = evecs[:, r:]
+    F_trend = X @ trend_basis
+    F_cycle = X @ cycle_basis
+
+    return {
+        "r": int(r),
+        "trend_basis": trend_basis,
+        "cycle_basis": cycle_basis,
+        "F_trend": F_trend,
+        "F_cycle": F_cycle,
+    }
 
 
 def select_dmfm_rank(
