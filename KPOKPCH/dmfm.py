@@ -187,8 +187,6 @@ def kalman_smoother_dmfm(
     xf = np.zeros((Tn, d))
     Pf = np.zeros((Tn, d, d))
 
-    loglik = 0.0
-
     # Kalman filter --------------------------------------------------------
     for t in range(Tn):
         if t == 0:
@@ -210,8 +208,6 @@ def kalman_smoother_dmfm(
             K_gain = V_prior @ Z.T @ inv(S)
             x_post = x_prior + K_gain @ (y_obs - Z @ x_prior)
             V_post = V_prior - K_gain @ Z @ V_prior
-            sign, logdet = np.linalg.slogdet(S)
-            loglik -= 0.5 * (len(idx) * np.log(2 * np.pi) + logdet + (y_obs - Z @ x_prior).T @ inv(S) @ (y_obs - Z @ x_prior))
         else:
             x_post = x_prior
             V_post = V_prior
@@ -243,6 +239,28 @@ def kalman_smoother_dmfm(
 
     F_smooth = xs[:, :r].reshape(Tn, k1, k2)
 
+    # QML log-likelihood computed from smoothed states --------------------
+    loglik = 0.0
+    Z_base = np.kron(C, R)
+    Sigma_U_base = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
+    for t in range(Tn):
+        f_t = xs[t, :r]
+        Vt = Vs[t, :r, :r]
+        y_vec = Y[t].reshape(-1)
+        m_vec = mask[t].reshape(-1)
+        idx = np.where(m_vec)[0]
+        if idx.size == 0:
+            continue
+        Z_t = Z_base[idx, :]
+        Sigma_U = Sigma_U_base[np.ix_(idx, idx)]
+        Sigma_Y = Z_t @ Vt @ Z_t.T + Sigma_U
+        Sigma_Y += 1e-8 * np.eye(idx.size)
+        innov = y_vec[idx] - Z_t @ f_t
+        sign, logdet = np.linalg.slogdet(Sigma_Y)
+        loglik -= 0.5 * (
+            logdet + innov.T @ inv(Sigma_Y) @ innov + idx.size * np.log(2 * np.pi)
+        )
+    
     return {
         "F_smooth": F_smooth,
         "V_smooth": Vs,
