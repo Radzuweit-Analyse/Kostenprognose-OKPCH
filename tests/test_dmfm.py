@@ -1,3 +1,4 @@
+import black
 import numpy as np
 import pytest
 
@@ -559,3 +560,27 @@ def test_unit_root_factors_function():
     res = KPOKPCH.test_unit_root_factors(F)
     key = list(res.keys())[0]
     assert isinstance(res[key][0], float)
+
+
+def test_qml_loglik_matches_kalman_smoother():
+    Y = generate_data(T=3, p1=2, p2=2)
+    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
+    ll_smoother = KPOKPCH.kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+    )["loglik"]
+    ll_qml = KPOKPCH.qml_loglik_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+    )
+    assert np.isclose(ll_qml, ll_smoother)
