@@ -1,4 +1,3 @@
-import black
 import numpy as np
 import pytest
 
