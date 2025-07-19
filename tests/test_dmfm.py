@@ -414,6 +414,12 @@ def test_select_dmfm_qml_search_P():
     assert k1 == 1 and k2 == 1 and 1 <= P <= 2
 
 
+def test_select_dmfm_qml_invalid_criterion():
+    Y = generate_data(T=4, p1=2, p2=2)
+    with pytest.raises(ValueError):
+        KPOKPCH.select_dmfm_qml(Y, max_k=1, max_P=1, criterion="invalid")
+
+
 def test_standard_errors_shapes():
     Y = generate_data(T=6)
     params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, return_se=True)
@@ -689,3 +695,18 @@ def test_aggregate_dmfm_estimates_weighted():
 def test_aggregate_dmfm_estimates_empty():
     with pytest.raises(ValueError):
         KPOKPCH.aggregate_dmfm_estimates([], [], full_shape=(1, 1))
+
+
+def test_forecast_dmfm_negative_steps():
+    Y = generate_data(T=4, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    with pytest.raises(ValueError):
+        KPOKPCH.forecast_dmfm(-1, params)
+
+
+def test_forecast_dmfm_bad_last_shape():
+    Y = generate_data(T=4, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    bad_F_last = np.zeros((2, 1, 1))
+    with pytest.raises(ValueError):
+        KPOKPCH.forecast_dmfm(1, params, F_last=bad_F_last)
