@@ -647,3 +647,45 @@ def test_conditional_forecast_enforces_known_values():
     assert fcst.shape == (2, 2, 2)
     assert np.allclose(fcst[0][mask1], known1[mask1])
     assert np.allclose(fcst[1][mask2], known2[mask2])
+
+
+def test_aggregate_dmfm_estimates_weighted():
+    weights = [0.25, 0.75]
+    local1 = {
+        "R": np.array([[1.0]]),
+        "C": np.array([[2.0]]),
+        "A": [np.array([[1.0]])],
+        "B": [np.array([[1.0]])],
+        "H": np.array([[1.0]]),
+        "K": np.array([[1.0]]),
+        "P": np.array([[1.0]]),
+        "Q": np.array([[1.0]]),
+    }
+    local2 = {
+        "R": np.array([[3.0]]),
+        "C": np.array([[4.0]]),
+        "A": [np.array([[2.0]])],
+        "B": [np.array([[3.0]])],
+        "H": np.array([[5.0]]),
+        "K": np.array([[5.0]]),
+        "P": np.array([[2.0]]),
+        "Q": np.array([[3.0]]),
+    }
+    idx = [np.array([0]), np.array([0])]
+    res = KPOKPCH.aggregate_dmfm_estimates(
+        [local1, local2], idx, full_shape=(1, 1), axis="row", weights=weights
+    )
+    wsum = sum(weights)
+    assert np.allclose(res["R"], (weights[0] * local1["R"] + weights[1] * local2["R"]) / wsum)
+    assert np.allclose(res["C"], (weights[0] * local1["C"] + weights[1] * local2["C"]) / wsum)
+    assert np.allclose(res["H"], (weights[0] * local1["H"] + weights[1] * local2["H"]) / wsum)
+    assert np.allclose(res["K"], (weights[0] * local1["K"] + weights[1] * local2["K"]) / wsum)
+    assert np.allclose(res["A"][0], (weights[0] * local1["A"][0] + weights[1] * local2["A"][0]) / wsum)
+    assert np.allclose(res["B"][0], (weights[0] * local1["B"][0] + weights[1] * local2["B"][0]) / wsum)
+    assert np.allclose(res["P"], (weights[0] * local1["P"] + weights[1] * local2["P"]) / wsum)
+    assert np.allclose(res["Q"], (weights[0] * local1["Q"] + weights[1] * local2["Q"]) / wsum)
+
+
+def test_aggregate_dmfm_estimates_empty():
+    with pytest.raises(ValueError):
+        KPOKPCH.aggregate_dmfm_estimates([], [], full_shape=(1, 1))
