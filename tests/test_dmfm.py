@@ -619,3 +619,31 @@ def test_pack_unpack_roundtrip():
     assert np.allclose(K, params["K"])
     assert np.allclose(Pmat, params["P"])
     assert np.allclose(Qmat, params["Q"])
+
+
+def test_conditional_forecast_enforces_known_values():
+    Y = generate_data(T=5, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
+
+    params["H"] *= 0
+    params["K"] *= 0
+
+    known1 = np.full((2, 2), np.nan)
+    mask1 = np.zeros((2, 2), dtype=bool)
+    known1[0, 0] = 0.5
+    mask1[0, 0] = True
+
+    known2 = np.full((2, 2), np.nan)
+    mask2 = np.zeros((2, 2), dtype=bool)
+    known2[1, 1] = -0.2
+    mask2[1, 1] = True
+
+    fcst = KPOKPCH.conditional_forecast_dmfm(
+        2,
+        params,
+        known_future={1: known1, 2: known2},
+        mask_future={1: mask1, 2: mask2},
+    )
+    assert fcst.shape == (2, 2, 2)
+    assert np.allclose(fcst[0][mask1], known1[mask1])
+    assert np.allclose(fcst[1][mask2], known2[mask2])
