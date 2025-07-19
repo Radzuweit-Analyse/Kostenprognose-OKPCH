@@ -950,8 +950,10 @@ def fit_dmfm_em(
     nonstationary: bool = False,
     i1_factors: bool = False,
     return_se: bool = False,
+    return_se_dynamics: bool = False,
     use_qml_opt: bool = False,
     return_trend_decomp: bool = False,
+    unit_root_test: str | None = None,
     *,
     kronecker_only: bool = False,
     diagonal_idiosyncratic: bool = False,
@@ -980,9 +982,14 @@ def fit_dmfm_em(
     return_se : bool, optional
         If ``True`` the dictionary additionally contains a ``"standard_errors"``
         field with standard errors for ``R`` and ``C``.
+    return_se_dynamics : bool, optional
+        If ``True`` include standard errors for the MAR dynamics ``A`` and ``B``.
     return_trend_decomp : bool, optional
         If ``True`` and ``i1_factors`` is ``True``, the output includes a
         trend decomposition of the latent factors.
+    unit_root_test : {'adf', 'kpss'} or None, optional
+        If provided, perform a unit root test on the estimated factors and
+        include the results in the output dictionary.
     kronecker_only : bool, optional
         Estimate the MAR dynamics for ``vec(F_t)`` directly using stacked
         transition matrices ``Phi``.
@@ -992,7 +999,11 @@ def fit_dmfm_em(
     Returns
     -------
     dict
-        Fitted parameters, smoothed factors and log-likelihood trace.
+        Fitted parameters, smoothed factors and log-likelihood trace. The output
+        contains additional fields ``'aic'``, ``'bic'`` and ``'n_params'``. If
+        ``return_se_dynamics`` is ``True`` standard errors for ``A`` and ``B``
+        are returned under ``'standard_errors_dynamics'``. If ``unit_root_test``
+        is specified the test results are stored in ``'unit_root_tests'``.
     """
     if use_qml_opt:
         res = optimize_qml_dmfm(
@@ -1048,8 +1059,32 @@ def fit_dmfm_em(
         params["standard_errors"] = compute_standard_errors_dmfm(
             Y, params["R"], params["C"], params["F"], mask
         )
+    if return_se_dynamics:
+        params["standard_errors_dynamics"] = compute_standard_errors_dynamics(
+            params["F"], params["A"], params["B"]
+        )
     if i1_factors and return_trend_decomp:
         params["trend_decomposition"] = identify_dmfm_trends(params["F"])
+    if unit_root_test is not None:
+        params["unit_root_tests"] = test_unit_root_factors(params["F"], method=unit_root_test)
+
+    # information criteria and parameter count
+    Tn, p1, p2 = Y.shape
+    n_params = (
+        p1 * k1
+        + p2 * k2
+        + P * (k1**2 + k2**2)
+        + (p1 * (p1 + 1) // 2 if not diagonal_idiosyncratic else p1)
+        + (p2 * (p2 + 1) // 2 if not diagonal_idiosyncratic else p2)
+        + k1 * (k1 + 1) // 2
+        + k2 * (k2 + 1) // 2
+    )
+    n_params = int(n_params)
+    final_ll = loglik_trace[-1] if loglik_trace else np.nan
+    params["n_params"] = n_params
+    params["aic"] = -2.0 * final_ll + 2.0 * n_params
+    params["bic"] = -2.0 * final_ll + np.log(Tn * p1 * p2) * n_params
+    params["lag_order"] = P
     return params
 
 
@@ -1148,6 +1183,96 @@ def compute_standard_errors_dmfm(
     return {"se_R": se_R, "se_C": se_C, "ci_R": ci_R, "ci_C": ci_C}
 
 
+def compute_standard_errors_dynamics(
+    F: np.ndarray, A: Sequence[np.ndarray], B: Sequence[np.ndarray]
+) -> dict:
+    """Return standard errors for MAR dynamics.
+
+    Parameters
+    ----------
+    F : ndarray
+        Smoothed factors ``(T, k1, k2)``.
+    A, B : sequence of ndarray
+        Estimated MAR coefficient matrices.
+
+    Returns
+    -------
+    dict
+        Dictionary with lists ``se_A`` and ``se_B`` containing the standard
+        errors for each lag matrix.
+    """
+
+    F = np.asarray(F, dtype=float)
+    P = len(A)
+    Tn, k1, k2 = F.shape
+
+    se_A = [np.zeros_like(A[l]) for l in range(P)]
+    se_B = [np.zeros_like(B[l]) for l in range(P)]
+
+    for ell in range(P):
+        # standard errors for A_ell
+        for i1 in range(k1):
+            X_stack = []
+            y_stack = []
+            for t in range(ell + 1, Tn):
+                F_pred_other = np.zeros((k1, k2))
+                for j in range(P):
+                    if j == ell:
+                        continue
+                    if t - j - 1 < 0:
+                        continue
+                    F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+                Y_res = F[t] - F_pred_other
+                X_A = F[t - ell - 1] @ B[ell].T
+                for j2 in range(k2):
+                    X_stack.append(X_A[:, j2])
+                    y_stack.append(Y_res[i1, j2])
+            if X_stack:
+                Xmat = np.vstack(X_stack)
+                yvec = np.array(y_stack)
+                XtX = Xmat.T @ Xmat
+                beta = A[ell][i1]
+                resid = yvec - Xmat @ beta
+                if yvec.size > k1:
+                    sigma2 = float(resid @ resid) / max(1.0, yvec.size - k1)
+                else:
+                    sigma2 = 0.0
+                cov = sigma2 * inv(XtX + 1e-8 * np.eye(k1))
+                se_A[ell][i1] = np.sqrt(np.diag(cov))
+
+        # standard errors for B_ell
+        for j1 in range(k2):
+            X_stack = []
+            y_stack = []
+            for t in range(ell + 1, Tn):
+                F_pred_other = np.zeros((k1, k2))
+                for j in range(P):
+                    if j == ell:
+                        continue
+                    if t - j - 1 < 0:
+                        continue
+                    F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+                Y_res_T = F[t].T - F_pred_other.T
+                X_B = F[t - ell - 1].T @ A[ell].T
+                for i2 in range(k1):
+                    X_stack.append(X_B[:, i2])
+                    y_stack.append(Y_res_T[j1, i2])
+            if X_stack:
+                Xmat = np.vstack(X_stack)
+                yvec = np.array(y_stack)
+                XtX = Xmat.T @ Xmat
+                beta = B[ell][j1]
+                resid = yvec - Xmat @ beta
+                if yvec.size > k2:
+                    sigma2 = float(resid @ resid) / max(1.0, yvec.size - k2)
+                else:
+                    sigma2 = 0.0
+                cov = sigma2 * inv(XtX + 1e-8 * np.eye(k2))
+                se_B[ell][j1] = np.sqrt(np.diag(cov))
+
+    return {"se_A": se_A, "se_B": se_B}
+
+
 def identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
     """Identify common stochastic trends in the factor path.
 
@@ -1203,6 +1328,64 @@ def identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
         "F_trend": F_trend,
         "F_cycle": F_cycle,
     }
+
+
+def test_unit_root_factors(F: np.ndarray, method: str = "adf") -> dict:
+    """Perform unit root tests on the latent factors.
+
+    Parameters
+    ----------
+    F : ndarray
+        Factor array of shape ``(T, k1, k2)``.
+    method : {{'adf', 'kpss'}}, optional
+        Test to perform. Only a simple ADF implementation is provided if
+        ``'statsmodels'`` is unavailable. ``'kpss'`` falls back to a basic
+        implementation.
+
+    Returns
+    -------
+    dict
+        Mapping from factor indices to ``(statistic, pvalue)`` tuples.
+    """
+
+    F = np.asarray(F, dtype=float)
+    if F.ndim != 3:
+        raise ValueError("F must be a 3D array")
+    Tn, k1, k2 = F.shape
+
+    from math import sqrt
+    from scipy.stats import t as student_t
+
+    def _adf(x: np.ndarray) -> tuple[float, float]:
+        x = np.asarray(x, dtype=float)
+        dx = np.diff(x)
+        lag_x = x[:-1]
+        X = np.column_stack([lag_x, np.ones_like(lag_x)])
+        beta, *_ = np.linalg.lstsq(X, dx, rcond=None)
+        resid = dx - X @ beta
+        s2 = (resid @ resid) / max(1.0, len(dx) - 2)
+        se = sqrt(s2 * inv(X.T @ X)[0, 0])
+        t_stat = beta[0] / se if se > 0 else 0.0
+        pval = 2 * (1 - student_t.cdf(abs(t_stat), df=max(1, len(dx) - 2)))
+        return float(t_stat), float(pval)
+
+    results: dict = {}
+    for i in range(k1):
+        for j in range(k2):
+            series = F[:, i, j]
+            if method == "adf":
+                stat, pval = _adf(series)
+            else:
+                # simple KPSS with constant
+                y = series - np.mean(series)
+                s = np.cumsum(y)
+                eta = np.sum(s ** 2) / (Tn ** 2)
+                var = np.var(y, ddof=1)
+                stat = eta / var if var > 0 else 0.0
+                pval = np.nan
+            results[f"f{i}_{j}"] = (stat, pval)
+
+    return results
 
 
 def select_dmfm_rank(
@@ -1330,8 +1513,8 @@ def select_dmfm_qml(
                     p1 * k1
                     + p2 * k2
                     + P * (k1**2 + k2**2)
-                    + p1
-                    + p2
+                    + p1 * (p1 + 1) / 2
+                    + p2 * (p2 + 1) / 2
                     + k1 * (k1 + 1) / 2
                     + k2 * (k2 + 1) / 2
                 )
