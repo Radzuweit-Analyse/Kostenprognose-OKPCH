@@ -20,6 +20,559 @@ except Exception:  # pragma: no cover - joblib not available
     delayed = None
 
 
+def _init_rc_f(
+    Y_proj: np.ndarray, mask: np.ndarray, k1: int, k2: int, method: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return initial ``R``, ``C`` and factor path ``F``."""
+
+    T, p1, p2 = Y_proj.shape
+    if method == "svd":
+        Y_bar = np.nanmean(Y_proj, axis=0)
+        U, _, Vt = svd(Y_bar, full_matrices=False)
+        R = U[:, :k1]
+        C = Vt.T[:, :k2]
+    elif method == "pe":
+        S_row_sum = np.zeros((p1, p1))
+        S_col_sum = np.zeros((p2, p2))
+        count_row = np.zeros((p1, p1))
+        count_col = np.zeros((p2, p2))
+
+        for t in range(T):
+            Y_t = Y_proj[t]
+            M_t = mask[t]
+            S_row_sum += Y_t @ Y_t.T
+            S_col_sum += Y_t.T @ Y_t
+            count_row += M_t @ M_t.T
+            count_col += M_t.T @ M_t
+
+        S_row = np.divide(S_row_sum, np.maximum(count_row, 1), where=count_row > 0)
+        S_col = np.divide(S_col_sum, np.maximum(count_col, 1), where=count_col > 0)
+
+        S_row = 0.5 * (S_row + S_row.T)
+        S_col = 0.5 * (S_col + S_col.T)
+
+        evals_row, evecs_row = np.linalg.eigh(S_row)
+        evals_col, evecs_col = np.linalg.eigh(S_col)
+        idx_row = np.argsort(evals_row)[::-1]
+        idx_col = np.argsort(evals_col)[::-1]
+        R = evecs_row[:, idx_row[:k1]]
+        C = evecs_col[:, idx_col[:k2]]
+    else:
+        raise ValueError("method must be 'svd' or 'pe'")
+
+    F = np.empty((T, k1, k2))
+    for t in range(T):
+        F[t] = R.T @ np.nan_to_num(Y_proj[t]) @ C
+
+    return R, C, F
+
+
+def _init_idiosyncratic(Y_proj: np.ndarray, R: np.ndarray, C: np.ndarray, F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return initial idiosyncratic covariance matrices ``H`` and ``K``."""
+
+    T, p1, p2 = Y_proj.shape
+    resid = Y_proj - np.einsum("ij,tjk,kl->til", R, F, C.T)
+    H = np.zeros((p1, p1))
+    K = np.zeros((p2, p2))
+    for t in range(T):
+        for j in range(p2):
+            H += np.outer(resid[t, :, j], resid[t, :, j])
+        for i in range(p1):
+            K += np.outer(resid[t, i, :], resid[t, i, :])
+
+    H = H / max(1, T * p2)
+    K = K / max(1, T * p1)
+    H = 0.5 * (H + H.T)
+    K = 0.5 * (K + K.T)
+    tr_H = np.trace(H)
+    tr_K = np.trace(K)
+    if tr_H > 0:
+        H *= float(p1) / tr_H
+    if tr_K > 0:
+        K *= float(p2) / tr_K
+    return H, K
+
+
+def _init_dynamics(k1: int, k2: int, P: int) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
+    """Return initial MAR coefficients and innovation covariances."""
+
+    A = [np.eye(k1) for _ in range(P)]
+    B = [np.eye(k2) for _ in range(P)]
+    Pmat = np.eye(k1)
+    Qmat = np.eye(k2)
+    Phi = [np.kron(B[l], A[l]) for l in range(P)]
+    return A, B, Phi, Pmat, Qmat
+
+
+def _kalman_filter_dmfm(
+    Y: np.ndarray,
+    mask: np.ndarray,
+    Tmat: np.ndarray,
+    Q_full: np.ndarray,
+    Z_full: np.ndarray,
+    R_full: np.ndarray,
+    i1_factors: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Run the Kalman filter for the DMFM."""
+
+    Tn, d = mask.shape[0], Tmat.shape[0]
+    xp = np.zeros((Tn, d))
+    Pp = np.zeros((Tn, d, d))
+    xf = np.zeros((Tn, d))
+    Pf = np.zeros((Tn, d, d))
+    x_pred = np.zeros(d)
+    V_pred = np.eye(d) * (1e4 if i1_factors else 1e2)
+    for t in range(Tn):
+        if t == 0:
+            x_prior = np.zeros(d)
+            V_prior = np.eye(d) * (1e4 if i1_factors else 1e2)
+        else:
+            x_prior = Tmat @ x_pred
+            V_prior = Tmat @ V_pred @ Tmat.T + Q_full
+
+        y_vec = Y[t].reshape(-1)
+        m_vec = mask[t].reshape(-1)
+        idx = np.where(m_vec)[0]
+
+        if idx.size > 0:
+            Z = Z_full[idx, :]
+            R_t = R_full[np.ix_(idx, idx)]
+            y_obs = y_vec[idx]
+            S = Z @ V_prior @ Z.T + R_t
+            S += 1e-8 * np.eye(S.shape[0])
+            K_gain = V_prior @ Z.T @ inv(S)
+            x_post = x_prior + K_gain @ (y_obs - Z @ x_prior)
+            V_post = V_prior - K_gain @ Z @ V_prior
+        else:
+            x_post = x_prior
+            V_post = V_prior
+
+        xp[t] = x_prior
+        Pp[t] = V_prior
+        xf[t] = x_post
+        Pf[t] = V_post
+
+        x_pred = x_post
+        V_pred = V_post
+    return xp, Pp, xf, Pf
+
+
+def _kalman_smooth_dmfm(
+    xp: np.ndarray,
+    Pp: np.ndarray,
+    xf: np.ndarray,
+    Pf: np.ndarray,
+    Tmat: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the RTS smoother for the DMFM."""
+
+    Tn, d = xf.shape
+    xs = np.zeros_like(xf)
+    Vs = np.zeros_like(Pf)
+    xs[-1] = xf[-1]
+    Vs[-1] = Pf[-1]
+    J = np.zeros((Tn - 1, d, d))
+    for t in range(Tn - 2, -1, -1):
+        J[t] = Pf[t] @ Tmat.T @ inv(Pp[t + 1] + 1e-8 * np.eye(d))
+        xs[t] = xf[t] + J[t] @ (xs[t + 1] - xp[t + 1])
+        Vs[t] = Pf[t] + J[t] @ (Vs[t + 1] - Pp[t + 1]) @ J[t].T
+    Vss = np.zeros((Tn - 1, d, d))
+    for t in range(Tn - 1):
+        Vss[t] = J[t] @ Vs[t + 1]
+    return xs, Vs, Vss
+    
+
+def _kalman_loglik_dmfm(
+    Y: np.ndarray,
+    mask: np.ndarray,
+    xs: np.ndarray,
+    Vs: np.ndarray,
+    R: np.ndarray,
+    C: np.ndarray,
+    H: np.ndarray,
+    K: np.ndarray,
+    diagonal_idiosyncratic: bool,
+) -> float:
+    """Compute QML log-likelihood from smoothed states."""
+
+    Tn = Y.shape[0]
+    k1 = R.shape[1]
+    k2 = C.shape[1]
+    r = k1 * k2
+    loglik = 0.0
+    Z_base = np.kron(C, R)
+    Sigma_U_base = np.kron(K, H)
+    if diagonal_idiosyncratic:
+        Sigma_U_base = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
+    for t in range(Tn):
+        f_t = xs[t, :r]
+        Vt = Vs[t, :r, :r]
+        y_vec = Y[t].reshape(-1)
+        m_vec = mask[t].reshape(-1)
+        idx = np.where(m_vec)[0]
+        if idx.size == 0:
+            continue
+        Z_t = Z_base[idx, :]
+        Sigma_U = Sigma_U_base[np.ix_(idx, idx)]
+        Sigma_Y = Z_t @ Vt @ Z_t.T + Sigma_U
+        Sigma_Y += 1e-8 * np.eye(idx.size)
+        innov = y_vec[idx] - Z_t @ f_t
+        sign, logdet = np.linalg.slogdet(Sigma_Y)
+        loglik -= 0.5 * (
+            logdet + innov.T @ inv(Sigma_Y) @ innov + idx.size * np.log(2 * np.pi)
+        )
+    return float(loglik)
+
+
+def _run_em_iterations(
+    Y: np.ndarray,
+    params: dict,
+    max_iter: int,
+    tol: float,
+    mask: np.ndarray | None,
+    nonstationary: bool,
+    i1_factors: bool,
+    *,
+    kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
+) -> dict:
+    """Run EM iterations and update ``params`` in place."""
+
+    loglik_trace: list[float] = []
+    diff_trace: list[float] = []
+    ll_diff_trace: list[float] = []
+    last_ll = -np.inf
+    for it in range(max_iter):
+        params, diff, ll = em_step_dmfm(
+            Y,
+            params,
+            mask,
+            nonstationary,
+            i1_factors=i1_factors,
+            kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
+        )
+        ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
+        diff_trace.append(diff)
+        ll_diff_trace.append(ll_change)
+        if it > 0 and ll_change < -1e-6:
+            warnings.warn(
+                f"Log-likelihood decreased by {ll_change:.3e} at iteration {it}."
+            )
+            break
+        loglik_trace.append(ll)
+        last_ll = ll
+        if diff < tol:
+            break
+
+    params["loglik"] = loglik_trace
+    params["param_diff"] = diff_trace
+    params["ll_diff"] = ll_diff_trace
+    params["frozen"] = True
+    return params
+
+
+def _update_row_loadings(Y, F, C, R, mask):
+    Tn, p1, p2 = Y.shape
+    k1 = R.shape[1]
+    R_new = np.zeros_like(R)
+    for i in range(p1):
+        X_stack = []
+        y_stack = []
+        for t in range(Tn):
+            m = mask[t, i, :] if mask is not None else np.ones(p2, dtype=bool)
+            if not m.any():
+                continue
+            X = (F[t] @ C.T).T[m, :]
+            y_stack.append(Y[t, i, m])
+            X_stack.append(X)
+        if X_stack:
+            Xmat = np.vstack(X_stack)
+            yvec = np.concatenate(y_stack)
+            R_new[i] = np.linalg.lstsq(Xmat, yvec, rcond=None)[0]
+        else:
+            R_new[i] = R[i]
+    return R_new
+
+
+def _update_col_loadings(Y, F, R_new, C, mask):
+    Tn, p1, p2 = Y.shape
+    k2 = C.shape[1]
+    C_new = np.zeros_like(C)
+    for j in range(p2):
+        X_stack = []
+        y_stack = []
+        for t in range(Tn):
+            m = mask[t, :, j] if mask is not None else np.ones(p1, dtype=bool)
+            if not m.any():
+                continue
+            X = (R_new @ F[t])[m, :]
+            y_stack.append(Y[t, m, j])
+            X_stack.append(X)
+        if X_stack:
+            Xmat = np.vstack(X_stack)
+            yvec = np.concatenate(y_stack)
+            C_new[j] = np.linalg.lstsq(Xmat, yvec, rcond=None)[0]
+        else:
+            C_new[j] = C[j]
+    return C_new
+
+
+def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
+    if nonstationary:
+        return A, B, [np.kron(B[l], A[l]) for l in range(Pord)]
+    if kronecker_only:
+        r_vec = k1 * k2
+        X_rows = []
+        Y_rows = []
+        for t in range(Pord, F.shape[0]):
+            X_rows.append(np.concatenate([F[t - l - 1].reshape(-1) for l in range(Pord)]))
+            Y_rows.append(F[t].reshape(-1))
+        if X_rows:
+            Xmat = np.vstack(X_rows)
+            Ymat = np.vstack(Y_rows)
+            XTX = Xmat.T @ Xmat
+            lam = 1e-6
+            coeff = np.linalg.solve(XTX + lam * np.eye(XTX.shape[0]), Xmat.T @ Ymat)
+            Phi_new = [coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)]
+        else:
+            Phi_new = [np.kron(B[l], A[l]) for l in range(Pord)]
+        return A, B, Phi_new
+    A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
+    B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
+    for ell in range(Pord):
+        A_num = np.zeros((k1, k1))
+        A_den = np.zeros((k1, k1))
+        B_num = np.zeros((k2, k2))
+        B_den = np.zeros((k2, k2))
+        for t in range(ell + 1, F.shape[0]):
+            F_pred_other = np.zeros((k1, k2))
+            for j in range(Pord):
+                if j == ell or t - j - 1 < 0:
+                    continue
+                F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+            Y_res = F[t] - F_pred_other
+            X_A = F[t - ell - 1] @ B[ell].T
+            A_num += Y_res @ X_A.T
+            A_den += X_A @ X_A.T
+            X_B = F[t - ell - 1].T @ A[ell].T
+            B_num += Y_res.T @ X_B.T
+            B_den += X_B @ X_B.T
+        A_est = A_num @ inv(A_den + 1e-8 * np.eye(k1))
+        B_est = B_num @ inv(B_den + 1e-8 * np.eye(k2))
+        if np.linalg.norm(A_den) < 1e-4:
+            A_est = A[ell]
+        if np.linalg.norm(B_den) < 1e-4:
+            B_est = B[ell]
+        A_new[ell] = np.clip(A_est, -0.99, 0.99)
+        B_new[ell] = np.clip(B_est, -0.99, 0.99)
+    Phi_new = [np.kron(B_new[l], A_new[l]) for l in range(Pord)]
+    return A_new, B_new, Phi_new
+
+
+def _update_innovations(F, Vs, Vss, A_new, B_new, Phi_new, i1_factors, kronecker_only):
+    Tn, k1, k2 = F.shape
+    Pord = len(A_new)
+    if i1_factors:
+        Tmat_new = np.eye(k1 * k2)
+        d = r = k1 * k2
+    else:
+        if kronecker_only:
+            d = k1 * k2 * Pord
+            r = k1 * k2
+            Tmat_new = _construct_state_matrices(None, None, Phi=Phi_new, kronecker_only=True)
+        else:
+            Tmat_new = _construct_state_matrices(A_new, B_new)
+            d = k1 * k2 * Pord
+            r = k1 * k2
+    P_new = np.zeros((k1, k1))
+    Q_new = np.zeros((k2, k2))
+    count = 0
+    if i1_factors:
+        for t in range(1, Tn):
+            diff = F[t] - F[t - 1]
+            diff_vec = diff.reshape(-1)
+            W = (
+                Vs[t][:r, :r]
+                + Vs[t - 1][:r, :r]
+                - Vss[t - 1][:r, :r]
+                - Vss[t - 1][:r, :r].T
+                + np.outer(diff_vec, diff_vec)
+            )
+            for i1 in range(k1):
+                idx1 = slice(i1 * k2, (i1 + 1) * k2)
+                for i2 in range(k1):
+                    idx2 = slice(i2 * k2, (i2 + 1) * k2)
+                    P_new[i1, i2] += np.trace(W[idx1, idx2])
+            for j1 in range(k2):
+                idxc1 = [i * k2 + j1 for i in range(k1)]
+                for j2 in range(k2):
+                    idxc2 = [i * k2 + j2 for i in range(k1)]
+                    Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
+            count += 1
+    else:
+        for t in range(Pord, Tn):
+            x_t = np.concatenate([F[t - l].reshape(-1) for l in range(Pord)])
+            x_tm1 = np.concatenate([F[t - 1 - l].reshape(-1) for l in range(Pord)])
+            E_tt = Vs[t] + np.outer(x_t, x_t)
+            E_tm1 = Vs[t - 1] + np.outer(x_tm1, x_tm1)
+            E_cross = Vss[t - 1] + np.outer(x_t, x_tm1)
+            W_full = (
+                E_tt
+                - E_cross @ Tmat_new.T
+                - Tmat_new @ E_cross.T
+                + Tmat_new @ E_tm1 @ Tmat_new.T
+            )
+            W = W_full[:r, :r]
+            for i1 in range(k1):
+                idx1 = slice(i1 * k2, (i1 + 1) * k2)
+                for i2 in range(k1):
+                    idx2 = slice(i2 * k2, (i2 + 1) * k2)
+                    P_new[i1, i2] += np.trace(W[idx1, idx2])
+            for j1 in range(k2):
+                idxc1 = [i * k2 + j1 for i in range(k1)]
+                for j2 in range(k2):
+                    idxc2 = [i * k2 + j2 for i in range(k1)]
+                    Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
+            count += 1
+    denom = max(1, count)
+    P_new /= denom * k2
+    Q_new /= denom * k1
+    return P_new, Q_new
+
+
+def _update_idiosyncratic(Y, F, R_new, C_new, mask, diagonal_idiosyncratic):
+    Tn, p1, p2 = Y.shape
+    H_new = np.zeros((p1, p1))
+    K_new = np.zeros((p2, p2))
+    resid = np.zeros_like(Y)
+    for t in range(Tn):
+        resid[t] = Y[t] - R_new @ F[t] @ C_new.T
+    if mask is not None:
+        resid = np.where(mask, resid, np.nan)
+    for t in range(Tn):
+        res_t = resid[t]
+        if mask is not None:
+            res_t = np.where(mask[t], res_t, 0)
+        H_new += res_t @ res_t.T
+        K_new += res_t.T @ res_t
+    denom_H = max(1.0, Tn * p2)
+    denom_K = max(1.0, Tn * p1)
+    H_new /= denom_H
+    K_new /= denom_K
+    H_new = 0.5 * (H_new + H_new.T)
+    K_new = 0.5 * (K_new + K_new.T)
+    if diagonal_idiosyncratic:
+        H_new = np.diag(np.diag(H_new))
+        K_new = np.diag(np.diag(K_new))
+    tr_H = np.trace(H_new)
+    tr_K = np.trace(K_new)
+    if tr_H > 0:
+        H_new *= float(p1) / tr_H
+    if tr_K > 0:
+        K_new *= float(p2) / tr_K
+    return H_new, K_new
+
+
+def _orthonormalize_loadings(R_new, C_new, F):
+    R_new, R_fac = np.linalg.qr(R_new)
+    C_new, C_fac = np.linalg.qr(C_new)
+    for t in range(F.shape[0]):
+        F[t] = R_fac @ F[t] @ C_fac.T
+    return R_new, C_new, F
+
+
+def _compute_param_diff(params, new_params, Pord, kronecker_only):
+    diff = 0.0
+    for key in ["R", "C"]:
+        diff += np.linalg.norm(params[key] - new_params[key])
+    for l in range(Pord):
+        if kronecker_only:
+            diff += np.linalg.norm(params["Phi"][l] - new_params["Phi"][l])
+        else:
+            diff += np.linalg.norm(params["A"][l] - new_params["A"][l])
+            diff += np.linalg.norm(params["B"][l] - new_params["B"][l])
+    diff /= max(1.0, np.linalg.norm(params["R"]))
+    return diff
+
+
+def _e_step(
+    Y: np.ndarray,
+    params: dict,
+    mask: np.ndarray | None,
+    nonstationary: bool,
+    i1_factors: bool,
+    *,
+    kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    scale = 10.0 if nonstationary else 1.0
+    return_values = kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+        mask,
+        params.get("P", np.eye(params["R"].shape[1])) * scale,
+        params.get("Q", np.eye(params["C"].shape[1])) * scale,
+        i1_factors=i1_factors,
+        Phi=params.get("Phi"),
+        kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
+    )
+    return (
+        return_values["F_smooth"],
+        return_values["V_smooth"],
+        return_values["V_ss"],
+    )
+
+
+def _m_step(
+    Y: np.ndarray,
+    F: np.ndarray,
+    Vs: np.ndarray,
+    Vss: np.ndarray,
+    params: dict,
+    mask: np.ndarray | None,
+    i1_factors: bool,
+    *,
+    kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
+) -> tuple[dict, float]:
+    Tn, p1, p2 = Y.shape
+    k1 = params["R"].shape[1]
+    k2 = params["C"].shape[1]
+    Pord = len(params["A"])
+    R_new = _update_row_loadings(Y, F, params["C"], params["R"], mask)
+    C_new = _update_col_loadings(Y, F, R_new, params["C"], mask)
+    R_new, C_new, F = _orthonormalize_loadings(R_new, C_new, F)
+    A_new, B_new, Phi_new = _update_dynamics(
+        F, params["A"], params["B"], Pord, k1, k2, False, kronecker_only
+    )
+    P_new, Q_new = _update_innovations(
+        F, Vs, Vss, A_new, B_new, Phi_new, i1_factors, kronecker_only
+    )
+    H_new, K_new = _update_idiosyncratic(
+        Y, F, R_new, C_new, mask, diagonal_idiosyncratic
+    )
+    new_params = {
+        "R": R_new,
+        "C": C_new,
+        "A": A_new,
+        "B": B_new,
+        "Phi": Phi_new,
+        "H": H_new,
+        "K": K_new,
+        "P": P_new,
+        "Q": Q_new,
+    }
+    diff = _compute_param_diff(params, new_params, Pord, kronecker_only)
+    return new_params, diff
+
+
 def initialize_dmfm(
     Y: np.ndarray,
     k1: int,
@@ -72,74 +625,9 @@ def initialize_dmfm(
 
     Y_proj = np.where(mask, Y, 0)
 
-    if method == "svd":
-        Y_bar = np.nanmean(Y_proj, axis=0)
-        U, _, Vt = svd(Y_bar, full_matrices=False)
-        R = U[:, :k1]
-        C = Vt.T[:, :k2]
-    elif method == "pe":
-        S_row_sum = np.zeros((p1, p1))
-        S_col_sum = np.zeros((p2, p2))
-        count_row = np.zeros((p1, p1))
-        count_col = np.zeros((p2, p2))
-
-        for t in range(T):
-            Y_t = Y_proj[t]
-            M_t = mask[t].astype(float)
-            S_row_sum += Y_t @ Y_t.T
-            S_col_sum += Y_t.T @ Y_t
-            count_row += M_t @ M_t.T
-            count_col += M_t.T @ M_t
-
-        S_row = np.divide(S_row_sum, np.maximum(count_row, 1), where=count_row > 0)
-        S_col = np.divide(S_col_sum, np.maximum(count_col, 1), where=count_col > 0)
-
-        S_row = 0.5 * (S_row + S_row.T)
-        S_col = 0.5 * (S_col + S_col.T)
-
-        evals_row, evecs_row = np.linalg.eigh(S_row)
-        evals_col, evecs_col = np.linalg.eigh(S_col)
-        idx_row = np.argsort(evals_row)[::-1]
-        idx_col = np.argsort(evals_col)[::-1]
-        R = evecs_row[:, idx_row[:k1]]
-        C = evecs_col[:, idx_col[:k2]]
-    else:
-        raise ValueError("method must be 'svd' or 'pe'")
-
-    F = np.empty((T, k1, k2))
-    for t in range(T):
-        F[t] = R.T @ np.where(mask[t], Y[t], 0) @ C
-
-    # initialize MAR coefficients as identity matrices ---------------------
-    A = [np.eye(k1) for _ in range(P)]
-    B = [np.eye(k2) for _ in range(P)]
-
-    # residuals and covariances --------------------------------------------
-    resid = Y_proj - np.einsum("ij,tjk,kl->til", R, F, C.T)
-    H = np.zeros((p1, p1))
-    K = np.zeros((p2, p2))
-    for t in range(T):
-        for j in range(p2):
-            H += np.outer(resid[t, :, j], resid[t, :, j])
-        for i in range(p1):
-            K += np.outer(resid[t, i, :], resid[t, i, :])
-
-    H = H / max(1, T * p2)
-    K = K / max(1, T * p1)
-    H = 0.5 * (H + H.T)
-    K = 0.5 * (K + K.T)
-    tr_H = np.trace(H)
-    tr_K = np.trace(K)
-    if tr_H > 0:
-        H *= float(p1) / tr_H
-    if tr_K > 0:
-        K *= float(p2) / tr_K
-
-    # innovation covariances ------------------------------------------------
-    Pmat = np.eye(k1)
-    Qmat = np.eye(k2)
-
-    Phi = [np.kron(B[l], A[l]) for l in range(P)]
+    R, C, F = _init_rc_f(Y_proj, mask, k1, k2, method)
+    A, B, Phi, Pmat, Qmat = _init_dynamics(k1, k2, P)
+    H, K = _init_idiosyncratic(Y_proj, R, C, F)
 
     return {
         "R": R,
@@ -163,7 +651,7 @@ def _construct_state_matrices(
     kronecker_only: bool = False,
 ) -> np.ndarray:
     """Return VAR(1) transition matrix for stacked MAR(P)."""
-
+    
     if kronecker_only:
         if Phi is None:
             raise ValueError("Phi must be provided when kronecker_only=True")
@@ -180,7 +668,7 @@ def _construct_state_matrices(
 
     if A is None or B is None:
         raise ValueError("A and B must be provided when kronecker_only=False")
-
+    
     k1 = A[0].shape[0]
     k2 = B[0].shape[0]
     P = len(A)
@@ -213,49 +701,7 @@ def kalman_smoother_dmfm(
 ) -> dict:
     r"""Kalman smoother for the dynamic matrix factor model.
 
-    Model Equations
-    ----------------
-    The state equation assumes a matrix autoregressive process of order ``P``
-    for the vectorized factors
-
-    .. math::
-
-       \operatorname{vec}(F_t) = \sum_{l=1}^P \Phi_l\,\operatorname{vec}(F_{t-l}) + \varepsilon_t,
-       \qquad \varepsilon_t \sim \mathcal{N}(0, P \otimes Q),
-
-    while the observation equation is
-
-    .. math::
-
-       \operatorname{vec}(Y_t) = (C \otimes R)\,\operatorname{vec}(F_t) + u_t,
-       \qquad u_t \sim \mathcal{N}(0, K \otimes H).
-
-    The Kalman matrices therefore exhibit a Kronecker structure.
-
-    Parameters
-    ----------
-    Y : array_like
-        Data array ``(T, p1, p2)``.
-    R, C : ndarray
-        Loading matrices.
-    A, B : list of ndarray
-        MAR(P) coefficient matrices.
-    H, K : ndarray
-        Idiosyncratic covariance matrices of shape ``(p1, p1)`` and ``(p2, p2)``.
-    mask : ndarray or None, optional
-        Observation mask with shape ``Y``. ``True`` indicates an observed
-        entry. ``None`` assumes full observations.
-    Pmat, Qmat : ndarray or None, optional
-        Innovation covariance matrices for the MAR(P) process. If ``None``
-        identity matrices are used.
-    diagonal_idiosyncratic : bool, optional
-        If ``True`` treat ``H`` and ``K`` as diagonal matrices.
-
-    Returns
-    -------
-    dict
-        Smoothed state means ``F`` of shape ``(T, k1, k2)`` and covariances
-        ``V`` together with filtered and predicted values and the log-likelihood.
+    Returns a dictionary with smoothed factors and related statistics.
     """
     Y = np.asarray(Y, dtype=float)
     Tn, p1, p2 = Y.shape
@@ -300,90 +746,20 @@ def kalman_smoother_dmfm(
     else:
         Z_full = np.hstack([Z0] + [np.zeros((p1 * p2, r)) for _ in range(P - 1)])
 
-    x_pred = np.zeros(d)
-    V_pred = np.eye(d) * (1e4 if i1_factors else 1e2)
-
-    xp = np.zeros((Tn, d))
-    Pp = np.zeros((Tn, d, d))
-    xf = np.zeros((Tn, d))
-    Pf = np.zeros((Tn, d, d))
-
-    # Kalman filter --------------------------------------------------------
-    for t in range(Tn):
-        if t == 0:
-            x_prior = np.zeros(d)
-            V_prior = np.eye(d) * (1e4 if i1_factors else 1e2)
-        else:
-            x_prior = Tmat @ x_pred
-            V_prior = Tmat @ V_pred @ Tmat.T + Q_full
-
-        y_vec = Y[t].reshape(-1)
-        m_vec = mask[t].reshape(-1)
-        idx = np.where(m_vec)[0]
-
-        if idx.size > 0:
-            Z = Z_full[idx, :]
-            R_t = R_full[np.ix_(idx, idx)]
-            y_obs = y_vec[idx]
-            S = Z @ V_prior @ Z.T + R_t
-            S += 1e-8 * np.eye(S.shape[0])
-            K_gain = V_prior @ Z.T @ inv(S)
-            x_post = x_prior + K_gain @ (y_obs - Z @ x_prior)
-            V_post = V_prior - K_gain @ Z @ V_prior
-        else:
-            x_post = x_prior
-            V_post = V_prior
-
-        xp[t] = x_prior
-        Pp[t] = V_prior
-        xf[t] = x_post
-        Pf[t] = V_post
-
-        x_pred = x_post
-        V_pred = V_post
-
-    # Rauch‑Tung‑Striebel smoother ----------------------------------------
-    xs = np.zeros_like(xf)
-    Vs = np.zeros_like(Pf)
-    xs[-1] = xf[-1]
-    Vs[-1] = Pf[-1]
-    J = np.zeros((Tn - 1, d, d))
-
-    for t in range(Tn - 2, -1, -1):
-        J[t] = Pf[t] @ Tmat.T @ inv(Pp[t + 1] + 1e-8 * np.eye(d))
-        xs[t] = xf[t] + J[t] @ (xs[t + 1] - xp[t + 1])
-        Vs[t] = Pf[t] + J[t] @ (Vs[t + 1] - Pp[t + 1]) @ J[t].T
-
-    # covariance of successive states (needed for MAR estimation) ----------
-    Vss = np.zeros((Tn - 1, d, d))
-    for t in range(Tn - 1):
-        Vss[t] = J[t] @ Vs[t + 1]
-
+    xp, Pp, xf, Pf = _kalman_filter_dmfm(
+        Y,
+        mask,
+        Tmat,
+        Q_full,
+        Z_full,
+        R_full,
+        i1_factors,
+    )
+    xs, Vs, Vss = _kalman_smooth_dmfm(xp, Pp, xf, Pf, Tmat)
     F_smooth = xs[:, :r].reshape(Tn, k1, k2)
-
-    # QML log-likelihood computed from smoothed states --------------------
-    loglik = 0.0
-    Z_base = np.kron(C, R)
-    Sigma_U_base = np.kron(K, H)
-    if diagonal_idiosyncratic:
-        Sigma_U_base = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
-    for t in range(Tn):
-        f_t = xs[t, :r]
-        Vt = Vs[t, :r, :r]
-        y_vec = Y[t].reshape(-1)
-        m_vec = mask[t].reshape(-1)
-        idx = np.where(m_vec)[0]
-        if idx.size == 0:
-            continue
-        Z_t = Z_base[idx, :]
-        Sigma_U = Sigma_U_base[np.ix_(idx, idx)]
-        Sigma_Y = Z_t @ Vt @ Z_t.T + Sigma_U
-        Sigma_Y += 1e-8 * np.eye(idx.size)
-        innov = y_vec[idx] - Z_t @ f_t
-        sign, logdet = np.linalg.slogdet(Sigma_Y)
-        loglik -= 0.5 * (
-            logdet + innov.T @ inv(Sigma_Y) @ innov + idx.size * np.log(2 * np.pi)
-        )
+    ll = _kalman_loglik_dmfm(
+        Y, mask, xs, Vs, R, C, H, K, diagonal_idiosyncratic
+    )
 
     return {
         "F_smooth": F_smooth,
@@ -391,7 +767,7 @@ def kalman_smoother_dmfm(
         "V_ss": Vss,
         "F_filt": xf[:, :r].reshape(Tn, k1, k2),
         "F_pred": xp[:, :r].reshape(Tn, k1, k2),
-        "loglik": float(loglik),
+        "loglik": ll,
     }
 
 
@@ -651,53 +1027,7 @@ def em_step_dmfm(
 ) -> tuple[dict, float, float]:
     r"""Perform one EM iteration for the DMFM.
 
-    Mathematical Formulation
-    -----------------------
-    E-step: compute expectations using the Kalman smoother
-
-    .. math::
-
-        \mathbb{E}[F_t \mid Y_{1:T}],\quad
-        \mathbb{E}[F_t F_t'],\quad
-        \mathbb{E}[F_t F_{t-1}'].
-
-    M-step: update loadings and dynamics by least squares, e.g.
-
-    .. math::
-
-        \min_R \sum_t \|Y_t - R F_t C'\|^2,
-
-    and, if ``kronecker_only=False``,
-
-    .. math::
-
-        \min_{A_l,B_l} \sum_t \|F_t - \sum_{l=1}^P A_l F_{t-l} B_l'\|^2.
-
-    Parameters
-    ----------
-    Y : array_like
-        Observed array ``(T, p1, p2)``.
-    params : dict
-        Current parameter estimates as produced by ``initialize_dmfm`` or
-        previous EM steps.
-    mask : ndarray or None, optional
-        Observation mask of the same shape as ``Y``.
-    nonstationary : bool, optional
-        If ``True`` keep MAR coefficients fixed at identity and allow larger
-        state innovations.
-    i1_factors : bool, optional
-        If ``True`` treat the latent factors as an I(1) process.
-    kronecker_only : bool, optional
-        If ``True`` estimate and use MAR dynamics directly for ``vec(F_t)`` via
-        stacked Kronecker matrices ``Phi``.
-    diagonal_idiosyncratic : bool, optional
-        If ``True`` restrict ``H`` and ``K`` to be diagonal.
-
-    Returns
-    -------
-    tuple
-        Updated parameter dictionary, the relative parameter change and the
-        log-likelihood value.
+    Returns updated parameters, relative change and log-likelihood.
     """
     if params.get("frozen"):
         ll = qml_loglik_dmfm(
@@ -717,266 +1047,27 @@ def em_step_dmfm(
             diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         return params, 0.0, ll
-
-    R = params["R"]
-    C = params["C"]
-    A = params["A"]
-    B = params["B"]
-    H = params["H"]
-    K = params["K"]
-    Pmat = params.get("P", np.eye(R.shape[1]))
-    Qmat = params.get("Q", np.eye(C.shape[1]))
-
-    scale = 1.0
-    if nonstationary:
-        scale = 10.0
-    smooth = kalman_smoother_dmfm(
+    
+    F, Vs, Vss = _e_step(
         Y,
-        R,
-        C,
-        A,
-        B,
-        H,
-        K,
+        params,
         mask,
-        Pmat * scale,
-        Qmat * scale,
-        i1_factors=i1_factors,
-        Phi=params.get("Phi"),
+        nonstationary,
+        i1_factors,
         kronecker_only=kronecker_only,
         diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
-    F = smooth["F_smooth"]
-    Tn, p1, p2 = Y.shape
-    k1 = R.shape[1]
-    k2 = C.shape[1]
-    Pord = len(A)
-
-    # Update R -------------------------------------------------------------
-    R_new = np.zeros_like(R)
-    for i in range(p1):
-        X_stack = []
-        y_stack = []
-        for t in range(Tn):
-            m = mask[t, i, :] if mask is not None else np.ones(p2, dtype=bool)
-            if not m.any():
-                continue
-            X = (F[t] @ C.T).T[m, :]  # (sum m) x k1
-            y_stack.append(Y[t, i, m])
-            X_stack.append(X)
-        if X_stack:
-            Xmat = np.vstack(X_stack)
-            yvec = np.concatenate(y_stack)
-            R_new[i] = np.linalg.lstsq(Xmat, yvec, rcond=None)[0]
-        else:
-            R_new[i] = R[i]
-
-    # Update C -------------------------------------------------------------
-    C_new = np.zeros_like(C)
-    for j in range(p2):
-        X_stack = []
-        y_stack = []
-        for t in range(Tn):
-            m = mask[t, :, j] if mask is not None else np.ones(p1, dtype=bool)
-            if not m.any():
-                continue
-            X = (R_new @ F[t])[m, :]  # (sum m) x k2
-            y_stack.append(Y[t, m, j])
-            X_stack.append(X)
-        if X_stack:
-            Xmat = np.vstack(X_stack)
-            yvec = np.concatenate(y_stack)
-            C_new[j] = np.linalg.lstsq(Xmat, yvec, rcond=None)[0]
-        else:
-            C_new[j] = C[j]
-
-    # Orthonormalize R and C and adjust F ---------------------------------
-    R_new, R_fac = np.linalg.qr(R_new)
-    C_new, C_fac = np.linalg.qr(C_new)
-    for t in range(Tn):
-        F[t] = R_fac @ F[t] @ C_fac.T
-
-    # Update MAR matrices or Phi -----------------------------------------
-    if nonstationary:
-        A_new = A
-        B_new = B
-        Phi_new = params.get("Phi")
-    else:
-        if kronecker_only:
-            r_vec = k1 * k2
-            X_rows = []
-            Y_rows = []
-            for t in range(Pord, Tn):
-                X_rows.append(
-                    np.concatenate([F[t - l - 1].reshape(-1) for l in range(Pord)])
-                )
-                Y_rows.append(F[t].reshape(-1))
-            if X_rows:
-                Xmat = np.vstack(X_rows)
-                Ymat = np.vstack(Y_rows)
-                XTX = Xmat.T @ Xmat
-                lam = 1e-6
-                coeff = np.linalg.solve(XTX + lam * np.eye(XTX.shape[0]), Xmat.T @ Ymat)
-                Phi_new = [coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)]
-            else:
-                Phi_new = params.get("Phi")
-            A_new = A
-            B_new = B
-        else:
-            A_new = [np.zeros_like(A[0]) for _ in range(Pord)]
-            B_new = [np.zeros_like(B[0]) for _ in range(Pord)]
-
-            for ell in range(Pord):
-                A_num = np.zeros((k1, k1))
-                A_den = np.zeros((k1, k1))
-                B_num = np.zeros((k2, k2))
-                B_den = np.zeros((k2, k2))
-                for t in range(ell + 1, Tn):
-                    F_pred_other = np.zeros((k1, k2))
-                    for j in range(Pord):
-                        if j == ell:
-                            continue
-                        if t - j - 1 < 0:
-                            continue
-                        F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
-                    Y_res = F[t] - F_pred_other
-                    X_A = F[t - ell - 1] @ B[ell].T
-                    A_num += Y_res @ X_A.T
-                    A_den += X_A @ X_A.T
-                    X_B = F[t - ell - 1].T @ A[ell].T
-                    B_num += Y_res.T @ X_B.T
-                    B_den += X_B @ X_B.T
-                A_est = A_num @ inv(A_den + 1e-8 * np.eye(k1))
-                B_est = B_num @ inv(B_den + 1e-8 * np.eye(k2))
-                if np.linalg.norm(A_den) < 1e-4:
-                    A_est = A[ell]
-                if np.linalg.norm(B_den) < 1e-4:
-                    B_est = B[ell]
-                A_est = np.clip(A_est, -0.99, 0.99)
-                B_est = np.clip(B_est, -0.99, 0.99)
-                A_new[ell] = A_est
-                B_new[ell] = B_est
-            Phi_new = [np.kron(B_new[l], A_new[l]) for l in range(Pord)]
-
-    # Update innovation covariances P and Q --------------------------------
-    Vs = smooth["V_smooth"]
-    Vss = smooth["V_ss"]
-    if i1_factors:
-        Tmat_new = np.eye(k1 * k2)
-        d = r = k1 * k2
-    else:
-        if kronecker_only:
-            d = k1 * k2 * Pord
-            r = k1 * k2
-            Tmat_new = _construct_state_matrices(
-                None,
-                None,
-                Phi=Phi_new,
-                kronecker_only=True,
-            )
-        else:
-            Tmat_new = _construct_state_matrices(A_new, B_new)
-            d = k1 * k2 * Pord
-            r = k1 * k2
-
-    P_new = np.zeros((k1, k1))
-    Q_new = np.zeros((k2, k2))
-    count = 0
-    if i1_factors:
-        for t in range(1, Tn):
-            diff = F[t] - F[t - 1]
-            diff_vec = diff.reshape(-1)
-            W = (
-                Vs[t][:r, :r]
-                + Vs[t - 1][:r, :r]
-                - Vss[t - 1][:r, :r]
-                - Vss[t - 1][:r, :r].T
-                + np.outer(diff_vec, diff_vec)
-            )
-            for i1 in range(k1):
-                idx1 = slice(i1 * k2, (i1 + 1) * k2)
-                for i2 in range(k1):
-                    idx2 = slice(i2 * k2, (i2 + 1) * k2)
-                    P_new[i1, i2] += np.trace(W[idx1, idx2])
-            for j1 in range(k2):
-                idxc1 = [i * k2 + j1 for i in range(k1)]
-                for j2 in range(k2):
-                    idxc2 = [i * k2 + j2 for i in range(k1)]
-                    Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
-            count += 1
-    else:
-        for t in range(Pord, Tn):
-            x_t = np.concatenate([F[t - l].reshape(-1) for l in range(Pord)])
-            x_tm1 = np.concatenate([F[t - 1 - l].reshape(-1) for l in range(Pord)])
-            E_tt = Vs[t] + np.outer(x_t, x_t)
-            E_tm1 = Vs[t - 1] + np.outer(x_tm1, x_tm1)
-            E_cross = Vss[t - 1] + np.outer(x_t, x_tm1)
-            W_full = (
-                E_tt
-                - E_cross @ Tmat_new.T
-                - Tmat_new @ E_cross.T
-                + Tmat_new @ E_tm1 @ Tmat_new.T
-            )
-            W = W_full[:r, :r]
-            for i1 in range(k1):
-                idx1 = slice(i1 * k2, (i1 + 1) * k2)
-                for i2 in range(k1):
-                    idx2 = slice(i2 * k2, (i2 + 1) * k2)
-                    P_new[i1, i2] += np.trace(W[idx1, idx2])
-            for j1 in range(k2):
-                idxc1 = [i * k2 + j1 for i in range(k1)]
-                for j2 in range(k2):
-                    idxc2 = [i * k2 + j2 for i in range(k1)]
-                    Q_new[j1, j2] += np.trace(W[np.ix_(idxc1, idxc2)])
-            count += 1
-    denom = max(1, count)
-    P_new /= denom * k2
-    Q_new /= denom * k1
-
-    # Update idiosyncratic covariances H and K ----------------------------
-    resid = np.zeros_like(Y)
-    for t in range(Tn):
-        resid[t] = Y[t] - R_new @ F[t] @ C_new.T
-    if mask is not None:
-        resid = np.where(mask, resid, np.nan)
-    H_new = np.zeros_like(H)
-    K_new = np.zeros_like(K)
-    for t in range(Tn):
-        res_t = resid[t]
-        if mask is not None:
-            res_t = np.where(mask[t], res_t, 0)
-        H_new += res_t @ res_t.T
-        K_new += res_t.T @ res_t
-
-    denom_H = max(1.0, Tn * p2)
-    denom_K = max(1.0, Tn * p1)
-    H_new /= denom_H
-    K_new /= denom_K
-    H_new = 0.5 * (H_new + H_new.T)
-    K_new = 0.5 * (K_new + K_new.T)
-    if diagonal_idiosyncratic:
-        H_new = np.diag(np.diag(H_new))
-        K_new = np.diag(np.diag(K_new))
-    tr_H = np.trace(H_new)
-    tr_K = np.trace(K_new)
-    if tr_H > 0:
-        H_new *= float(p1) / tr_H
-    if tr_K > 0:
-        K_new *= float(p2) / tr_K
-
-    new_params = {
-        "R": R_new,
-        "C": C_new,
-        "A": A_new,
-        "B": B_new,
-        "Phi": Phi_new,
-        "H": H_new,
-        "K": K_new,
-        "P": P_new,
-        "Q": Q_new,
-    }
-
-    # compute smoothed factors and log-likelihood under updated parameters
+    new_params, diff = _m_step(
+        Y,
+        F,
+        Vs,
+        Vss,
+        params,
+        mask,
+        i1_factors,
+        kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
+    )
     smooth_new = kalman_smoother_dmfm(
         Y,
         new_params["R"],
@@ -995,17 +1086,6 @@ def em_step_dmfm(
     )
     new_params["F"] = smooth_new["F_smooth"]
     ll = smooth_new["loglik"]
-
-    diff = 0.0
-    for key in ["R", "C"]:
-        diff += np.linalg.norm(params[key] - new_params[key])
-    for l in range(Pord):
-        if kronecker_only:
-            diff += np.linalg.norm(params["Phi"][l] - Phi_new[l])
-        else:
-            diff += np.linalg.norm(params["A"][l] - new_params["A"][l])
-            diff += np.linalg.norm(params["B"][l] - new_params["B"][l])
-    diff /= max(1.0, np.linalg.norm(params["R"]))
 
     return new_params, diff, ll
 
@@ -1031,64 +1111,7 @@ def fit_dmfm_em(
 ) -> dict:
     r"""Fit a dynamic matrix factor model using the EM algorithm.
 
-    Convergence Criterion
-    --------------------
-    Iterations stop when the relative change in parameters satisfies
-
-    .. math::
-
-       \Delta = \frac{\|\theta^{(k)} - \theta^{(k-1)}\|}{\|\theta^{(k-1)}\|} < \text{tol}.
-
-    If ``i1_factors=True`` the factor dynamics follow
-
-    .. math::
-
-       \Delta F_t = \sum_{l=1}^P \Phi_l \Delta F_{t-l} + \varepsilon_t.
-
-    Parameters
-    ----------
-    Y : array_like
-        Data array of shape ``(T, p1, p2)``.
-    k1, k2 : int
-        Number of row and column factors.
-    P : int
-        Order of the MAR dynamics.
-    max_iter : int, optional
-        Maximum number of EM iterations.
-    tol : float, optional
-        Convergence threshold based on relative parameter change.
-    mask : ndarray or None, optional
-        Observation mask, ``True`` for observed entries.
-    nonstationary : bool, optional
-        If ``True`` keep the MAR process close to a random walk and do not
-        re-estimate the MAR coefficients.
-    i1_factors : bool, optional
-        If ``True`` model the latent factors as an I(1) process.
-    return_se : bool, optional
-        If ``True`` the dictionary additionally contains a ``"standard_errors"``
-        field with standard errors for ``R`` and ``C``.
-    return_se_dynamics : bool, optional
-        If ``True`` include standard errors for the MAR dynamics ``A`` and ``B``.
-    return_trend_decomp : bool, optional
-        If ``True`` and ``i1_factors`` is ``True``, the output includes a
-        trend decomposition of the latent factors.
-    unit_root_test : {'adf', 'kpss'} or None, optional
-        If provided, perform a unit root test on the estimated factors and
-        include the results in the output dictionary.
-    kronecker_only : bool, optional
-        Estimate the MAR dynamics for ``vec(F_t)`` directly using stacked
-        transition matrices ``Phi``.
-    diagonal_idiosyncratic : bool, optional
-        If ``True`` restrict ``H`` and ``K`` to be diagonal during estimation.
-
-    Returns
-    -------
-    dict
-        Fitted parameters, smoothed factors and log-likelihood trace. The output
-        contains additional fields ``'aic'``, ``'bic'`` and ``'n_params'``. If
-        ``return_se_dynamics`` is ``True`` standard errors for ``A`` and ``B``
-        are returned under ``'standard_errors_dynamics'``. If ``unit_root_test``
-        is specified the test results are stored in ``'unit_root_tests'``.
+    Returns fitted parameters and a log-likelihood trace.
     """
     if use_qml_opt:
         res = optimize_qml_dmfm(
@@ -1105,41 +1128,22 @@ def fit_dmfm_em(
                 Y, res["R"], res["C"], res["F"], mask
             )
         return res
-
+    
     params = initialize_dmfm(Y, k1, k2, P, mask, method="pe")
     if nonstationary or kronecker_only:
         params["A"] = [np.eye(k1) for _ in range(P)]
         params["B"] = [np.eye(k2) for _ in range(P)]
-    loglik_trace: list[float] = []
-    diff_trace: list[float] = []
-    ll_diff_trace: list[float] = []
-    last_ll = -np.inf
-    for it in range(max_iter):
-        params, diff, ll = em_step_dmfm(
-            Y,
-            params,
-            mask,
-            nonstationary,
-            i1_factors=i1_factors,
-            kronecker_only=kronecker_only,
-            diagonal_idiosyncratic=diagonal_idiosyncratic,
-        )
-        ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
-        diff_trace.append(diff)
-        ll_diff_trace.append(ll_change)
-        if it > 0 and ll_change < -1e-6:
-            warnings.warn(
-                f"Log-likelihood decreased by {ll_change:.3e} at iteration {it}."
-            )
-            break
-        loglik_trace.append(ll)
-        last_ll = ll
-        if diff < tol:
-            break
-    params["loglik"] = loglik_trace
-    params["param_diff"] = diff_trace
-    params["ll_diff"] = ll_diff_trace
-    params["frozen"] = True
+    params = _run_em_iterations(
+        Y,
+        params,
+        max_iter,
+        tol,
+        mask,
+        nonstationary,
+        i1_factors,
+        kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
+    )
     if return_se:
         params["standard_errors"] = compute_standard_errors_dmfm(
             Y, params["R"], params["C"], params["F"], mask
@@ -1151,9 +1155,7 @@ def fit_dmfm_em(
     if i1_factors and return_trend_decomp:
         params["trend_decomposition"] = identify_dmfm_trends(params["F"])
     if unit_root_test is not None:
-        params["unit_root_tests"] = test_unit_root_factors(
-            params["F"], method=unit_root_test
-        )
+        params["unit_root_tests"] = test_unit_root_factors(params["F"], method=unit_root_test)
 
     # information criteria and parameter count
     Tn, p1, p2 = Y.shape
@@ -1167,7 +1169,7 @@ def fit_dmfm_em(
         + k2 * (k2 + 1) // 2
     )
     n_params = int(n_params)
-    final_ll = loglik_trace[-1] if loglik_trace else np.nan
+    final_ll = params.get("loglik", [np.nan])[-1]
     params["n_params"] = n_params
     params["aic"] = -2.0 * final_ll + 2.0 * n_params
     params["bic"] = -2.0 * final_ll + np.log(Tn * p1 * p2) * n_params
@@ -1477,7 +1479,7 @@ def test_unit_root_factors(F: np.ndarray, method: str = "adf") -> dict:
                 # simple KPSS with constant
                 y = series - np.mean(series)
                 s = np.cumsum(y)
-                eta = np.sum(s**2) / (Tn**2)
+                eta = np.sum(s ** 2) / (Tn ** 2)
                 var = np.var(y, ddof=1)
                 stat = eta / var if var > 0 else 0.0
                 pval = np.nan
@@ -1596,8 +1598,6 @@ def select_dmfm_qml(
     best_ic = np.inf
     best_cfg = (1, 1, 1)
     criterion = criterion.lower()
-    if criterion not in {"aic", "bic"}:
-        raise ValueError(f"Unknown criterion: {criterion}")
 
     for k1 in range(1, max_k + 1):
         for k2 in range(1, max_k + 1):
@@ -1764,9 +1764,7 @@ def conditional_forecast_dmfm(
 
     R_full = np.kron(params["K"], params["H"])
     Z0 = np.kron(C, R)
-    Z_full = np.hstack(
-        [Z0] + [np.zeros((R.shape[0] * C.shape[0], r)) for _ in range(Pord - 1)]
-    )
+    Z_full = np.hstack([Z0] + [np.zeros((R.shape[0] * C.shape[0], r)) for _ in range(Pord - 1)])
 
     V = np.eye(d) * 1e2
 
@@ -1775,7 +1773,7 @@ def conditional_forecast_dmfm(
         # predict step
         x = Tmat @ x
         V = Tmat @ V @ Tmat.T + Q_full
-        y_pred = R @ x[:r].reshape(k1, k2) @ C.T
+        y_pred = (R @ x[:r].reshape(k1, k2) @ C.T)
 
         mask_h = None
         if mask_future is not None:
@@ -1798,7 +1796,7 @@ def conditional_forecast_dmfm(
         Y_fcst[h - 1] = y_pred
 
     return Y_fcst
-
+    
 
 def subsample_panel(
     Y: np.ndarray,
@@ -1923,9 +1921,7 @@ def aggregate_dmfm_estimates(
         P_glob += w * params.get("P", np.eye(k1))
         Q_glob += w * params.get("Q", np.eye(k2))
 
-    R_glob = np.divide(
-        R_glob, R_count[:, None], out=np.zeros_like(R_glob), where=R_count[:, None] > 0
-    )
+    R_glob = np.divide(R_glob, R_count[:, None], out=np.zeros_like(R_glob), where=R_count[:, None] > 0)
     H_glob = np.divide(H_glob, H_count, out=np.zeros_like(H_glob), where=H_count > 0)
     if C_weight_total > 0:
         C_glob /= C_weight_total
@@ -1995,3 +1991,4 @@ def fit_dmfm_distributed(
     params["loglik"] = [smooth["loglik"]]
     params["frozen"] = True
     return params
+    
