@@ -28,8 +28,21 @@ def initialize_dmfm(
     mask: np.ndarray | None = None,
     method: str = "pe",
 ) -> dict:
-    """Return initial parameter guesses for the DMFM.
+    r"""Return initial parameter guesses for the DMFM.
 
+    Model Equations
+    ---------------
+    The observations are assumed to follow
+
+    .. math::
+
+       Y_t = R F_t C' + E_t,
+
+    where :math:`Y_t \in \mathbb{R}^{p_1 \times p_2}` is the data matrix,
+    :math:`R \in \mathbb{R}^{p_1 \times k_1}` and
+    :math:`C \in \mathbb{R}^{p_2 \times k_2}` are loading matrices,
+    :math:`F_t \in \mathbb{R}^{k_1 \times k_2}` are latent factors and
+    :math:`E_t \sim \mathcal{N}(0, H \otimes K)` denotes idiosyncratic errors.
     Parameters
     ----------
     Y : array_like
@@ -198,7 +211,26 @@ def kalman_smoother_dmfm(
     kronecker_only: bool = False,
     diagonal_idiosyncratic: bool = False,
 ) -> dict:
-    """Kalman smoother for the dynamic matrix factor model.
+    r"""Kalman smoother for the dynamic matrix factor model.
+
+    Model Equations
+    ----------------
+    The state equation assumes a matrix autoregressive process of order ``P``
+    for the vectorized factors
+
+    .. math::
+
+       \operatorname{vec}(F_t) = \sum_{l=1}^P \Phi_l\,\operatorname{vec}(F_{t-l}) + \varepsilon_t,
+       \qquad \varepsilon_t \sim \mathcal{N}(0, P \otimes Q),
+
+    while the observation equation is
+
+    .. math::
+
+       \operatorname{vec}(Y_t) = (C \otimes R)\,\operatorname{vec}(F_t) + u_t,
+       \qquad u_t \sim \mathcal{N}(0, K \otimes H).
+
+    The Kalman matrices therefore exhibit a Kronecker structure.
 
     Parameters
     ----------
@@ -380,7 +412,24 @@ def qml_loglik_dmfm(
     kronecker_only: bool = False,
     diagonal_idiosyncratic: bool = False,
 ) -> float:
-    """Return QML log-likelihood using the Kalman filter."""
+    r"""Return QML log-likelihood using the Kalman filter.
+
+    Mathematical Formulation
+    -----------------------
+    The Gaussian quasi log-likelihood evaluated at parameters
+    :math:`\theta` is
+
+    .. math::
+
+       \ell(\theta) = -\tfrac{1}{2} \sum_{t=1}^T\left[
+           \log\det\Sigma_t + (y_t-\mu_t)'\Sigma_t^{-1}(y_t-\mu_t)
+           + p\log(2\pi)
+       \right],
+
+    where :math:`y_t` are the observed (vectorized) data and
+    :math:`\Sigma_t` the innovation covariance matrices produced by the
+    Kalman filter.
+    """
 
     out = kalman_smoother_dmfm(
         Y,
@@ -600,7 +649,29 @@ def em_step_dmfm(
     kronecker_only: bool = False,
     diagonal_idiosyncratic: bool = False,
 ) -> tuple[dict, float, float]:
-    """Perform one EM iteration for the DMFM.
+    r"""Perform one EM iteration for the DMFM.
+
+    Mathematical Formulation
+    -----------------------
+    E-step: compute expectations using the Kalman smoother
+
+    .. math::
+
+        \mathbb{E}[F_t \mid Y_{1:T}],\quad
+        \mathbb{E}[F_t F_t'],\quad
+        \mathbb{E}[F_t F_{t-1}'].
+
+    M-step: update loadings and dynamics by least squares, e.g.
+
+    .. math::
+
+        \min_R \sum_t \|Y_t - R F_t C'\|^2,
+
+    and, if ``kronecker_only=False``,
+
+    .. math::
+
+        \min_{A_l,B_l} \sum_t \|F_t - \sum_{l=1}^P A_l F_{t-l} B_l'\|^2.
 
     Parameters
     ----------
@@ -958,7 +1029,21 @@ def fit_dmfm_em(
     kronecker_only: bool = False,
     diagonal_idiosyncratic: bool = False,
 ) -> dict:
-    """Fit a dynamic matrix factor model using the EM algorithm.
+    r"""Fit a dynamic matrix factor model using the EM algorithm.
+
+    Convergence Criterion
+    --------------------
+    Iterations stop when the relative change in parameters satisfies
+
+    .. math::
+
+       \Delta = \frac{\|\theta^{(k)} - \theta^{(k-1)}\|}{\|\theta^{(k-1)}\|} < \text{tol}.
+
+    If ``i1_factors=True`` the factor dynamics follow
+
+    .. math::
+
+       \Delta F_t = \sum_{l=1}^P \Phi_l \Delta F_{t-l} + \varepsilon_t.
 
     Parameters
     ----------
@@ -1274,7 +1359,18 @@ def compute_standard_errors_dynamics(
 
 
 def identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
-    """Identify common stochastic trends in the factor path.
+    r"""Identify common stochastic trends in the factor path.
+
+    Trend Decomposition
+    -------------------
+    Let :math:`\Delta F_t = F_t - F_{t-1}` and define
+
+    .. math::
+
+       \Sigma = \frac{1}{T-1} \sum_t \Delta F_t \Delta F_t'.
+
+    An eigen-decomposition ``Sigma = V \Lambda V'`` determines the number
+    of trends by the cumulative share of eigenvalues exceeding ``threshold``.
 
     Parameters
     ----------
