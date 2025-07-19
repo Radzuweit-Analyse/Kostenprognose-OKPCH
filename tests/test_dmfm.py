@@ -510,3 +510,24 @@ def test_forecast_dmfm_return_factors():
     Y_fcst, F_fcst = KPOKPCH.forecast_dmfm(1, params, return_factors=True)
     assert Y_fcst.shape == (1, 2, 2)
     assert F_fcst.shape == (1, 1, 1)
+
+
+def test_subsample_panel_basic():
+    Y = generate_data(T=4, p1=4, p2=3)
+    blocks, idx = KPOKPCH.subsample_panel(Y, 2, axis="row")
+    assert len(blocks) == 2
+    assert sum(len(i) for i in idx) == Y.shape[1]
+
+
+def test_fit_dmfm_local_qml_runs():
+    Y = generate_data(T=4, p1=3, p2=2)
+    res = KPOKPCH.fit_dmfm_local_qml(Y, 1, 1, 1, max_iter=2)
+    assert "R" in res and "F" in res
+
+
+def test_fit_dmfm_distributed_runs():
+    Y = generate_data(T=5, p1=4, p2=3)
+    params = KPOKPCH.fit_dmfm_distributed(Y, B=2, k1=1, k2=1, P=1)
+    assert params["R"].shape == (Y.shape[1], 1)
+    assert params["C"].shape == (Y.shape[2], 1)
+    
