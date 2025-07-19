@@ -189,6 +189,7 @@ def kalman_smoother_dmfm(
     *,
     Phi: list[np.ndarray] | None = None,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> dict:
     """Kalman smoother for the dynamic matrix factor model.
 
@@ -208,6 +209,8 @@ def kalman_smoother_dmfm(
     Pmat, Qmat : ndarray or None, optional
         Innovation covariance matrices for the MAR(P) process. If ``None``
         identity matrices are used.
+    diagonal_idiosyncratic : bool, optional
+        If ``True`` treat ``H`` and ``K`` as diagonal matrices.
 
     Returns
     -------
@@ -250,6 +253,8 @@ def kalman_smoother_dmfm(
         Q_full[:r, :r] = Qx
 
     R_full = np.kron(K, H)
+    if diagonal_idiosyncratic:
+        R_full = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
     Z0 = np.kron(C, R)
     if i1_factors:
         Z_full = Z0
@@ -321,6 +326,8 @@ def kalman_smoother_dmfm(
     loglik = 0.0
     Z_base = np.kron(C, R)
     Sigma_U_base = np.kron(K, H)
+    if diagonal_idiosyncratic:
+        Sigma_U_base = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
     for t in range(Tn):
         f_t = xs[t, :r]
         Vt = Vs[t, :r, :r]
@@ -364,6 +371,7 @@ def qml_loglik_dmfm(
     *,
     Phi: list[np.ndarray] | None = None,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> float:
     """Return QML log-likelihood using the Kalman filter."""
 
@@ -381,6 +389,7 @@ def qml_loglik_dmfm(
         i1_factors=i1_factors,
         Phi=Phi,
         kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     return float(out["loglik"])
 
@@ -474,6 +483,7 @@ def qml_objective_dmfm(
     *,
     Phi: list[np.ndarray] | None = None,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> float:
     """Return negative QML log-likelihood for optimization."""
 
@@ -491,6 +501,7 @@ def qml_objective_dmfm(
         Qmat,
         Phi=Phi,
         kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     return -float(out["loglik"])
 
@@ -502,6 +513,7 @@ def optimize_qml_dmfm(
     P: int,
     mask: np.ndarray | None = None,
     init_params: dict | None = None,
+    diagonal_idiosyncratic: bool = False,
 ) -> dict:
     """Optimize the QML objective for the DMFM."""
 
@@ -529,7 +541,9 @@ def optimize_qml_dmfm(
         init_params.get("Q", np.eye(k2)),
     )
 
-    obj = lambda v: qml_objective_dmfm(v, Y, shape_info, mask)
+    obj = lambda v: qml_objective_dmfm(
+        v, Y, shape_info, mask, diagonal_idiosyncratic=diagonal_idiosyncratic
+    )
     if minimize is not None:
         res = minimize(obj, x0, method="L-BFGS-B")
         opt_x = res.x
@@ -550,6 +564,7 @@ def optimize_qml_dmfm(
         mask,
         Pmat,
         Qmat,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
 
     return {
@@ -576,6 +591,7 @@ def em_step_dmfm(
     i1_factors: bool = False,
     *,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> tuple[dict, float, float]:
     """Perform one EM iteration for the DMFM.
 
@@ -596,6 +612,8 @@ def em_step_dmfm(
     kronecker_only : bool, optional
         If ``True`` estimate and use MAR dynamics directly for ``vec(F_t)`` via
         stacked Kronecker matrices ``Phi``.
+    diagonal_idiosyncratic : bool, optional
+        If ``True`` restrict ``H`` and ``K`` to be diagonal.
     
     Returns
     -------
@@ -618,6 +636,7 @@ def em_step_dmfm(
             i1_factors=i1_factors,
             Phi=params.get("Phi"),
             kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         return params, 0.0, ll
     
@@ -647,6 +666,7 @@ def em_step_dmfm(
         i1_factors=i1_factors,
         Phi=params.get("Phi"),
         kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     F = smooth["F_smooth"]
     Tn, p1, p2 = Y.shape
@@ -856,6 +876,9 @@ def em_step_dmfm(
     K_new /= denom_K
     H_new = 0.5 * (H_new + H_new.T)
     K_new = 0.5 * (K_new + K_new.T)
+    if diagonal_idiosyncratic:
+        H_new = np.diag(np.diag(H_new))
+        K_new = np.diag(np.diag(K_new))
     tr_H = np.trace(H_new)
     tr_K = np.trace(K_new)
     if tr_H > 0:
@@ -890,6 +913,7 @@ def em_step_dmfm(
         i1_factors=i1_factors,
         Phi=new_params.get("Phi"),
         kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     new_params["F"] = smooth_new["F_smooth"]
     ll = smooth_new["loglik"]
@@ -923,6 +947,7 @@ def fit_dmfm_em(
     return_trend_decomp: bool = False,
     *,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> dict:
     """Fit a dynamic matrix factor model using the EM algorithm.
 
@@ -954,6 +979,8 @@ def fit_dmfm_em(
     kronecker_only : bool, optional
         Estimate the MAR dynamics for ``vec(F_t)`` directly using stacked
         transition matrices ``Phi``.
+    diagonal_idiosyncratic : bool, optional
+        If ``True`` restrict ``H`` and ``K`` to be diagonal during estimation.
     
     Returns
     -------
@@ -968,6 +995,7 @@ def fit_dmfm_em(
             P,
             mask=mask,
             init_params=None,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         if return_se:
             res["standard_errors"] = compute_standard_errors_dmfm(
@@ -991,6 +1019,7 @@ def fit_dmfm_em(
             nonstationary,
             i1_factors=i1_factors,
             kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
         diff_trace.append(diff)
