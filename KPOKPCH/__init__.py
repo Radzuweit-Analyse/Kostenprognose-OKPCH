@@ -19,6 +19,10 @@ __all__ = [
     "select_dmfm_qml",
     "forecast_dmfm",
     "conditional_forecast_dmfm",
+    "subsample_panel",
+    "fit_dmfm_local_qml",
+    "aggregate_dmfm_estimates",
+    "fit_dmfm_distributed",
 ]
 
 def __getattr__(name):
