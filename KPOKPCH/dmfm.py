@@ -11,6 +11,13 @@ from __future__ import annotations
 import numpy as np
 from numpy.linalg import inv, svd
 import warnings
+from typing import Iterable, Sequence
+
+try:  # pragma: no cover - optional joblib for parallel estimation
+    from joblib import Parallel, delayed
+except Exception:  # pragma: no cover - joblib not available
+    Parallel = None
+    delayed = None
 
 
 def initialize_dmfm(
@@ -1506,4 +1513,199 @@ def conditional_forecast_dmfm(
         Y_fcst[h - 1] = y_pred
 
     return Y_fcst
+    
+
+def subsample_panel(
+    Y: np.ndarray,
+    B: int,
+    axis: str = "row",
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Split the panel into ``B`` random subsets along ``axis``.
+
+    Parameters
+    ----------
+    Y : ndarray
+        Data array ``(T, p1, p2)``.
+    B : int
+        Number of blocks to create.
+    axis : {'row', 'column'}, optional
+        Dimension along which to subsample.
+
+    Returns
+    -------
+    tuple[list[ndarray], list[ndarray]]
+        List of data blocks and the corresponding index arrays.
+    """
+
+    Y = np.asarray(Y, dtype=float)
+    Tn, p1, p2 = Y.shape
+    if axis not in {"row", "column"}:
+        raise ValueError("axis must be 'row' or 'column'")
+    n = p1 if axis == "row" else p2
+    if B <= 0:
+        raise ValueError("B must be positive")
+
+    rng = np.random.default_rng(0)
+    perm = rng.permutation(n)
+    splits = np.array_split(perm, B)
+
+    blocks = []
+    indices = []
+    for idx in splits:
+        if axis == "row":
+            blocks.append(Y[:, idx, :])
+        else:
+            blocks.append(Y[:, :, idx])
+        indices.append(idx)
+    return blocks, indices
+
+
+def fit_dmfm_local_qml(
+    Y_block: np.ndarray,
+    k1: int,
+    k2: int,
+    P: int,
+    **kwargs,
+) -> dict:
+    """Estimate DMFM parameters on a data block."""
+
+    res = fit_dmfm_em(Y_block, k1, k2, P, **kwargs)
+    res["local_loglik"] = res.get("loglik", [np.nan])[-1]
+    return res
+
+
+def aggregate_dmfm_estimates(
+    local_params: Sequence[dict],
+    indices: Sequence[np.ndarray],
+    *,
+    full_shape: tuple[int, int],
+    axis: str = "row",
+    weights: Iterable[float] | None = None,
+) -> dict:
+    """Aggregate local DMFM estimates into global parameters."""
+
+    if not local_params:
+        raise ValueError("local_params must not be empty")
+
+    p1, p2 = full_shape
+    k1 = local_params[0]["R"].shape[1]
+    k2 = local_params[0]["C"].shape[1]
+    Pord = len(local_params[0]["A"])
+
+    if weights is None:
+        weights = [1.0] * len(local_params)
+    weights = list(weights)
+
+    R_glob = np.zeros((p1, k1))
+    C_glob = np.zeros((p2, k2))
+    H_glob = np.zeros((p1, p1))
+    K_glob = np.zeros((p2, p2))
+    A_glob = [np.zeros((k1, k1)) for _ in range(Pord)]
+    B_glob = [np.zeros((k2, k2)) for _ in range(Pord)]
+    P_glob = np.zeros((k1, k1))
+    Q_glob = np.zeros((k2, k2))
+
+    R_count = np.zeros(p1)
+    H_count = np.zeros((p1, p1))
+    C_weight_total = 0.0
+    K_weight_total = 0.0
+    weight_sum = 0.0
+
+    for w, params, idx in zip(weights, local_params, indices):
+        weight_sum += w
+        if axis == "row":
+            R_glob[idx] += w * params["R"]
+            H_glob[np.ix_(idx, idx)] += w * params["H"]
+            R_count[idx] += w
+            H_count[np.ix_(idx, idx)] += w
+            C_glob += w * params["C"]
+            K_glob += w * params["K"]
+            C_weight_total += w
+            K_weight_total += w
+        else:
+            C_glob[idx] += w * params["C"]
+            K_glob[np.ix_(idx, idx)] += w * params["K"]
+            R_glob += w * params["R"]
+            H_glob += w * params["H"]
+            R_count += w
+            H_count += w
+            C_weight_total += w
+            K_weight_total += w
+
+        for l in range(Pord):
+            A_glob[l] += w * params["A"][l]
+            B_glob[l] += w * params["B"][l]
+        P_glob += w * params.get("P", np.eye(k1))
+        Q_glob += w * params.get("Q", np.eye(k2))
+
+    R_glob = np.divide(R_glob, R_count[:, None], out=np.zeros_like(R_glob), where=R_count[:, None] > 0)
+    H_glob = np.divide(H_glob, H_count, out=np.zeros_like(H_glob), where=H_count > 0)
+    if C_weight_total > 0:
+        C_glob /= C_weight_total
+        K_glob /= K_weight_total
+    for l in range(Pord):
+        A_glob[l] /= weight_sum
+        B_glob[l] /= weight_sum
+    P_glob /= weight_sum
+    Q_glob /= weight_sum
+
+    return {
+        "R": R_glob,
+        "C": C_glob,
+        "A": A_glob,
+        "B": B_glob,
+        "H": H_glob,
+        "K": K_glob,
+        "P": P_glob,
+        "Q": Q_glob,
+    }
+
+
+def fit_dmfm_distributed(
+    Y: np.ndarray,
+    B: int,
+    k1: int,
+    k2: int,
+    P: int,
+    axis: str = "row",
+    aggregation: str = "average",
+    n_jobs: int | None = None,
+    **kwargs,
+) -> dict:
+    """Distributed QMLE estimation via subsampling."""
+
+    Y = np.asarray(Y, dtype=float)
+    Tn, p1, p2 = Y.shape
+    blocks, idx_list = subsample_panel(Y, B, axis=axis)
+
+    def _fit(block):
+        return fit_dmfm_local_qml(block, k1, k2, P, **kwargs)
+
+    if Parallel is not None and (n_jobs is not None and n_jobs != 1):
+        locals_res = Parallel(n_jobs=n_jobs)(delayed(_fit)(b) for b in blocks)
+    else:
+        locals_res = [_fit(b) for b in blocks]
+
+    weights = [len(idx) for idx in idx_list]
+    params = aggregate_dmfm_estimates(
+        locals_res,
+        idx_list,
+        full_shape=(p1, p2),
+        axis=axis,
+        weights=weights,
+    )
+
+    smooth = kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+    )
+    params["F"] = smooth["F_smooth"]
+    params["loglik"] = [smooth["loglik"]]
+    params["frozen"] = True
+    return params
     
