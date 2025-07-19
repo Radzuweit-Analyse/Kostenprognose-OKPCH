@@ -1309,3 +1309,172 @@ def select_dmfm_qml(
                     best_cfg = (k1, k2, P)
 
     return best_cfg
+
+
+def forecast_dmfm(
+    steps: int,
+    params: dict,
+    F_last: np.ndarray | None = None,
+    return_factors: bool = False,
+) -> np.ndarray:
+    """Return multi-step forecasts of ``Y`` based on estimated parameters.
+
+    Parameters
+    ----------
+    steps : int
+        Number of steps ahead to forecast.
+    params : dict
+        Parameter dictionary as returned by :func:`fit_dmfm_em`.
+    F_last : ndarray or None, optional
+        Last ``P`` factor observations used as starting state. If ``None`` the
+        last smoothed factors from ``params['F']`` are used.
+    return_factors : bool, optional
+        If ``True`` additionally return the forecasted factor matrices.
+
+    Returns
+    -------
+    ndarray
+        Array of shape ``(steps, p1, p2)`` with the forecasts. If
+        ``return_factors`` is ``True`` the factor forecasts are returned as the
+        second value.
+    """
+
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+
+    R = params["R"]
+    C = params["C"]
+
+    if params.get("Phi") is not None:
+        Phi = params["Phi"]
+        Pord = len(Phi)
+        Tmat = _construct_state_matrices(None, None, Phi=Phi, kronecker_only=True)
+    else:
+        A = params["A"]
+        B = params["B"]
+        Pord = len(A)
+        Tmat = _construct_state_matrices(A, B)
+
+    k1 = R.shape[1]
+    k2 = C.shape[1]
+    r = k1 * k2
+
+    if F_last is None:
+        F_hist = params["F"]
+        if F_hist.shape[0] < Pord:
+            raise ValueError("Not enough factor history for forecasting")
+        F_last = F_hist[-Pord:]
+    F_last = np.asarray(F_last)
+    if F_last.ndim == 2:
+        F_last = F_last[None, ...]
+    if F_last.shape != (Pord, k1, k2):
+        raise ValueError("F_last has incompatible shape")
+
+    x = np.concatenate([F_last[-1 - l].reshape(-1) for l in range(Pord)])
+
+    F_fcst = np.zeros((steps, k1, k2))
+    for h in range(steps):
+        x = Tmat @ x
+        F_fcst[h] = x[:r].reshape(k1, k2)
+
+    Y_fcst = np.einsum("ij,tjk,kl->til", R, F_fcst, C.T)
+
+    if return_factors:
+        return Y_fcst, F_fcst
+    return Y_fcst
+
+
+def conditional_forecast_dmfm(
+    steps: int,
+    params: dict,
+    known_future: dict[int, np.ndarray] | None = None,
+    mask_future: dict[int, np.ndarray] | None = None,
+) -> np.ndarray:
+    """Return conditional forecasts using future known values.
+
+    Parameters
+    ----------
+    steps : int
+        Number of steps ahead to forecast.
+    params : dict
+        Parameter dictionary as returned by :func:`fit_dmfm_em`.
+    known_future : dict[int, ndarray] or None, optional
+        Mapping from step ``h`` (1-indexed) to matrices with known future
+        entries. Unknown locations should be ``np.nan``.
+    mask_future : dict[int, ndarray] or None, optional
+        Boolean masks indicating the known entries for each ``h``.
+
+    Returns
+    -------
+    ndarray
+        Array of shape ``(steps, p1, p2)`` with the conditional forecasts.
+    """
+
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+
+    R = params["R"]
+    C = params["C"]
+    Pmat = params.get("P", np.eye(R.shape[1]))
+    Qmat = params.get("Q", np.eye(C.shape[1]))
+
+    if params.get("Phi") is not None:
+        Phi = params["Phi"]
+        Pord = len(Phi)
+        Tmat = _construct_state_matrices(None, None, Phi=Phi, kronecker_only=True)
+    else:
+        A = params["A"]
+        B = params["B"]
+        Pord = len(A)
+        Tmat = _construct_state_matrices(A, B)
+
+    k1 = R.shape[1]
+    k2 = C.shape[1]
+    r = k1 * k2
+    d = r * Pord
+
+    F_hist = params["F"]
+    if F_hist.shape[0] < Pord:
+        raise ValueError("Not enough factor history for forecasting")
+    F_last = F_hist[-Pord:]
+    x = np.concatenate([F_last[-1 - l].reshape(-1) for l in range(Pord)])
+
+    Qx = np.kron(Qmat, Pmat)
+    Q_full = np.zeros((d, d))
+    Q_full[:r, :r] = Qx
+
+    R_full = np.kron(params["K"], params["H"])
+    Z0 = np.kron(C, R)
+    Z_full = np.hstack([Z0] + [np.zeros((R.shape[0] * C.shape[0], r)) for _ in range(Pord - 1)])
+
+    V = np.eye(d) * 1e2
+
+    Y_fcst = np.zeros((steps, R.shape[0], C.shape[0]))
+    for h in range(1, steps + 1):
+        # predict step
+        x = Tmat @ x
+        V = Tmat @ V @ Tmat.T + Q_full
+        y_pred = (R @ x[:r].reshape(k1, k2) @ C.T)
+
+        mask_h = None
+        if mask_future is not None:
+            mask_h = mask_future.get(h)
+        Y_obs = None
+        if known_future is not None:
+            Y_obs = known_future.get(h)
+        if mask_h is not None and Y_obs is not None and np.any(mask_h):
+            idx = mask_h.reshape(-1)
+            Z = Z_full[idx, :]
+            R_t = R_full[np.ix_(idx, idx)]
+            y_vec = Y_obs.reshape(-1)[idx]
+            S = Z @ V @ Z.T + R_t
+            S += 1e-8 * np.eye(S.shape[0])
+            K_gain = V @ Z.T @ inv(S)
+            x = x + K_gain @ (y_vec - Z @ x)
+            V = V - K_gain @ Z @ V
+            y_pred = R @ x[:r].reshape(k1, k2) @ C.T
+
+        Y_fcst[h - 1] = y_pred
+
+    return Y_fcst
+    
