@@ -489,4 +489,24 @@ def test_fit_dmfm_em_trend_decomp():
     td = res.get("trend_decomposition")
     assert td is not None
     assert td["F_trend"].shape[0] == Y.shape[0]
-    
+
+
+def test_forecast_dmfm_basic():
+    Y = generate_data(T=6, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
+    fcst = KPOKPCH.forecast_dmfm(2, params)
+    assert fcst.shape == (2, 2, 2)
+    F_last = params["F"][-1]
+    A = params["A"][0]
+    B = params["B"][0]
+    expected_F1 = A @ F_last @ B.T
+    expected_Y1 = params["R"] @ expected_F1 @ params["C"].T
+    assert np.allclose(fcst[0], expected_Y1, atol=1e-6)
+
+
+def test_forecast_dmfm_return_factors():
+    Y = generate_data(T=5, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    Y_fcst, F_fcst = KPOKPCH.forecast_dmfm(1, params, return_factors=True)
+    assert Y_fcst.shape == (1, 2, 2)
+    assert F_fcst.shape == (1, 1, 1)
