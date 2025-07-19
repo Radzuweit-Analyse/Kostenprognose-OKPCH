@@ -17,6 +17,8 @@ __all__ = [
     "identify_dmfm_trends",
     "select_dmfm_rank",
     "select_dmfm_qml",
+    "forecast_dmfm",
+    "conditional_forecast_dmfm",
 ]
 
 def __getattr__(name):
