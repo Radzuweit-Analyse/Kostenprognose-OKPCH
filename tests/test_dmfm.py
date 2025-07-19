@@ -583,3 +583,39 @@ def test_qml_loglik_matches_kalman_smoother():
         params["K"],
     )
     assert np.isclose(ll_qml, ll_smoother)
+
+
+def test_pack_unpack_roundtrip():
+    Y = generate_data(T=4, p1=3, p2=2)
+    params = KPOKPCH.initialize_dmfm(Y, 2, 1, 1)
+
+    vec = KPOKPCH.pack_dmfm_parameters(
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+        params["P"],
+        params["Q"],
+    )
+
+    shape_info = {
+        "p1": params["R"].shape[0],
+        "k1": params["R"].shape[1],
+        "p2": params["C"].shape[0],
+        "k2": params["C"].shape[1],
+        "P": len(params["A"]),
+    }
+    R, C, A, B, H, K, Pmat, Qmat = KPOKPCH.unpack_dmfm_parameters(vec, shape_info)
+
+    assert np.allclose(R, params["R"])
+    assert np.allclose(C, params["C"])
+    for a, a0 in zip(A, params["A"]):
+        assert np.allclose(a, a0)
+    for b, b0 in zip(B, params["B"]):
+        assert np.allclose(b, b0)
+    assert np.allclose(H, params["H"])
+    assert np.allclose(K, params["K"])
+    assert np.allclose(Pmat, params["P"])
+    assert np.allclose(Qmat, params["Q"])
