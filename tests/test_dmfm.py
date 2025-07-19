@@ -414,6 +414,12 @@ def test_select_dmfm_qml_search_P():
     assert k1 == 1 and k2 == 1 and 1 <= P <= 2
 
 
+def test_select_dmfm_qml_invalid_criterion():
+    Y = generate_data(T=4, p1=2, p2=2)
+    with pytest.raises(ValueError):
+        KPOKPCH.select_dmfm_qml(Y, max_k=1, max_P=1, criterion="invalid")
+
+
 def test_standard_errors_shapes():
     Y = generate_data(T=6)
     params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, return_se=True)
@@ -559,3 +565,148 @@ def test_unit_root_factors_function():
     res = KPOKPCH.test_unit_root_factors(F)
     key = list(res.keys())[0]
     assert isinstance(res[key][0], float)
+
+
+def test_qml_loglik_matches_kalman_smoother():
+    Y = generate_data(T=3, p1=2, p2=2)
+    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
+    ll_smoother = KPOKPCH.kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+    )["loglik"]
+    ll_qml = KPOKPCH.qml_loglik_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+    )
+    assert np.isclose(ll_qml, ll_smoother)
+
+
+def test_pack_unpack_roundtrip():
+    Y = generate_data(T=4, p1=3, p2=2)
+    params = KPOKPCH.initialize_dmfm(Y, 2, 1, 1)
+
+    vec = KPOKPCH.pack_dmfm_parameters(
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+        params["P"],
+        params["Q"],
+    )
+
+    shape_info = {
+        "p1": params["R"].shape[0],
+        "k1": params["R"].shape[1],
+        "p2": params["C"].shape[0],
+        "k2": params["C"].shape[1],
+        "P": len(params["A"]),
+    }
+    R, C, A, B, H, K, Pmat, Qmat = KPOKPCH.unpack_dmfm_parameters(vec, shape_info)
+
+    assert np.allclose(R, params["R"])
+    assert np.allclose(C, params["C"])
+    for a, a0 in zip(A, params["A"]):
+        assert np.allclose(a, a0)
+    for b, b0 in zip(B, params["B"]):
+        assert np.allclose(b, b0)
+    assert np.allclose(H, params["H"])
+    assert np.allclose(K, params["K"])
+    assert np.allclose(Pmat, params["P"])
+    assert np.allclose(Qmat, params["Q"])
+
+
+def test_conditional_forecast_enforces_known_values():
+    Y = generate_data(T=5, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
+
+    params["H"] *= 0
+    params["K"] *= 0
+
+    known1 = np.full((2, 2), np.nan)
+    mask1 = np.zeros((2, 2), dtype=bool)
+    known1[0, 0] = 0.5
+    mask1[0, 0] = True
+
+    known2 = np.full((2, 2), np.nan)
+    mask2 = np.zeros((2, 2), dtype=bool)
+    known2[1, 1] = -0.2
+    mask2[1, 1] = True
+
+    fcst = KPOKPCH.conditional_forecast_dmfm(
+        2,
+        params,
+        known_future={1: known1, 2: known2},
+        mask_future={1: mask1, 2: mask2},
+    )
+    assert fcst.shape == (2, 2, 2)
+    assert np.allclose(fcst[0][mask1], known1[mask1])
+    assert np.allclose(fcst[1][mask2], known2[mask2])
+
+
+def test_aggregate_dmfm_estimates_weighted():
+    weights = [0.25, 0.75]
+    local1 = {
+        "R": np.array([[1.0]]),
+        "C": np.array([[2.0]]),
+        "A": [np.array([[1.0]])],
+        "B": [np.array([[1.0]])],
+        "H": np.array([[1.0]]),
+        "K": np.array([[1.0]]),
+        "P": np.array([[1.0]]),
+        "Q": np.array([[1.0]]),
+    }
+    local2 = {
+        "R": np.array([[3.0]]),
+        "C": np.array([[4.0]]),
+        "A": [np.array([[2.0]])],
+        "B": [np.array([[3.0]])],
+        "H": np.array([[5.0]]),
+        "K": np.array([[5.0]]),
+        "P": np.array([[2.0]]),
+        "Q": np.array([[3.0]]),
+    }
+    idx = [np.array([0]), np.array([0])]
+    res = KPOKPCH.aggregate_dmfm_estimates(
+        [local1, local2], idx, full_shape=(1, 1), axis="row", weights=weights
+    )
+    wsum = sum(weights)
+    assert np.allclose(res["R"], (weights[0] * local1["R"] + weights[1] * local2["R"]) / wsum)
+    assert np.allclose(res["C"], (weights[0] * local1["C"] + weights[1] * local2["C"]) / wsum)
+    assert np.allclose(res["H"], (weights[0] * local1["H"] + weights[1] * local2["H"]) / wsum)
+    assert np.allclose(res["K"], (weights[0] * local1["K"] + weights[1] * local2["K"]) / wsum)
+    assert np.allclose(res["A"][0], (weights[0] * local1["A"][0] + weights[1] * local2["A"][0]) / wsum)
+    assert np.allclose(res["B"][0], (weights[0] * local1["B"][0] + weights[1] * local2["B"][0]) / wsum)
+    assert np.allclose(res["P"], (weights[0] * local1["P"] + weights[1] * local2["P"]) / wsum)
+    assert np.allclose(res["Q"], (weights[0] * local1["Q"] + weights[1] * local2["Q"]) / wsum)
+
+
+def test_aggregate_dmfm_estimates_empty():
+    with pytest.raises(ValueError):
+        KPOKPCH.aggregate_dmfm_estimates([], [], full_shape=(1, 1))
+
+
+def test_forecast_dmfm_negative_steps():
+    Y = generate_data(T=4, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    with pytest.raises(ValueError):
+        KPOKPCH.forecast_dmfm(-1, params)
+
+
+def test_forecast_dmfm_bad_last_shape():
+    Y = generate_data(T=4, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    bad_F_last = np.zeros((2, 1, 1))
+    with pytest.raises(ValueError):
+        KPOKPCH.forecast_dmfm(1, params, F_last=bad_F_last)

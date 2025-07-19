@@ -20,3 +20,8 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
 packages = ["KPOKPCH"]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+skip-string-normalization = false

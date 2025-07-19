@@ -27,6 +27,7 @@ __all__ = [
     "fit_dmfm_distributed",
 ]
 
+
 def __getattr__(name):
     if name in __all__:
         module = import_module(".dmfm", __name__)
