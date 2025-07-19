@@ -11,6 +11,13 @@ from __future__ import annotations
 import numpy as np
 from numpy.linalg import inv, svd
 import warnings
+from typing import Iterable, Sequence
+
+try:  # pragma: no cover - optional joblib for parallel estimation
+    from joblib import Parallel, delayed
+except Exception:  # pragma: no cover - joblib not available
+    Parallel = None
+    delayed = None
 
 
 def initialize_dmfm(
@@ -19,9 +26,23 @@ def initialize_dmfm(
     k2: int,
     P: int,
     mask: np.ndarray | None = None,
+    method: str = "pe",
 ) -> dict:
-    """Return initial parameter guesses for the DMFM.
+    r"""Return initial parameter guesses for the DMFM.
 
+    Model Equations
+    ---------------
+    The observations are assumed to follow
+
+    .. math::
+
+       Y_t = R F_t C' + E_t,
+
+    where :math:`Y_t \in \mathbb{R}^{p_1 \times p_2}` is the data matrix,
+    :math:`R \in \mathbb{R}^{p_1 \times k_1}` and
+    :math:`C \in \mathbb{R}^{p_2 \times k_2}` are loading matrices,
+    :math:`F_t \in \mathbb{R}^{k_1 \times k_2}` are latent factors and
+    :math:`E_t \sim \mathcal{N}(0, H \otimes K)` denotes idiosyncratic errors.
     Parameters
     ----------
     Y : array_like
@@ -33,6 +54,10 @@ def initialize_dmfm(
     mask : ndarray or None, optional
         Binary mask with the same shape as ``Y`` where ``True`` indicates an
         observed entry. ``None`` treats all entries as observed.
+    method : {"pe", "svd"}, optional
+        Initialization method. ``"pe"`` uses the projected estimator based on
+        long-run covariance matrices, while ``"svd"`` relies on singular value
+        decomposition of the sample mean matrix.
 
     Returns
     -------
@@ -46,12 +71,41 @@ def initialize_dmfm(
         mask = np.ones_like(Y, dtype=bool)
 
     Y_proj = np.where(mask, Y, 0)
-    Y_bar = np.nanmean(Y_proj, axis=0)
 
-    U, _, Vt = svd(Y_bar, full_matrices=False)
-    R = U[:, :k1]
-    C = Vt.T[:, :k2]
+    if method == "svd":
+        Y_bar = np.nanmean(Y_proj, axis=0)
+        U, _, Vt = svd(Y_bar, full_matrices=False)
+        R = U[:, :k1]
+        C = Vt.T[:, :k2]
+    elif method == "pe":
+        S_row_sum = np.zeros((p1, p1))
+        S_col_sum = np.zeros((p2, p2))
+        count_row = np.zeros((p1, p1))
+        count_col = np.zeros((p2, p2))
 
+        for t in range(T):
+            Y_t = Y_proj[t]
+            M_t = mask[t].astype(float)
+            S_row_sum += Y_t @ Y_t.T
+            S_col_sum += Y_t.T @ Y_t
+            count_row += M_t @ M_t.T
+            count_col += M_t.T @ M_t
+
+        S_row = np.divide(S_row_sum, np.maximum(count_row, 1), where=count_row > 0)
+        S_col = np.divide(S_col_sum, np.maximum(count_col, 1), where=count_col > 0)
+
+        S_row = 0.5 * (S_row + S_row.T)
+        S_col = 0.5 * (S_col + S_col.T)
+
+        evals_row, evecs_row = np.linalg.eigh(S_row)
+        evals_col, evecs_col = np.linalg.eigh(S_col)
+        idx_row = np.argsort(evals_row)[::-1]
+        idx_col = np.argsort(evals_col)[::-1]
+        R = evecs_row[:, idx_row[:k1]]
+        C = evecs_col[:, idx_col[:k2]]
+    else:
+        raise ValueError("method must be 'svd' or 'pe'")
+    
     F = np.empty((T, k1, k2))
     for t in range(T):
         F[t] = R.T @ np.where(mask[t], Y[t], 0) @ C
@@ -101,8 +155,32 @@ def initialize_dmfm(
     }
 
 
-def _construct_state_matrices(A: list[np.ndarray], B: list[np.ndarray]) -> np.ndarray:
+def _construct_state_matrices(
+    A: list[np.ndarray] | None,
+    B: list[np.ndarray] | None,
+    *,
+    Phi: list[np.ndarray] | None = None,
+    kronecker_only: bool = False,
+) -> np.ndarray:
     """Return VAR(1) transition matrix for stacked MAR(P)."""
+    
+    if kronecker_only:
+        if Phi is None:
+            raise ValueError("Phi must be provided when kronecker_only=True")
+        P = len(Phi)
+        if P == 0:
+            raise ValueError("Phi must contain at least one matrix")
+        r = Phi[0].shape[0]
+        d = r * P
+        Tmat = np.zeros((d, d))
+        Tmat[:r, : r * P] = np.hstack(Phi)
+        if P > 1:
+            Tmat[r:, :-r] = np.eye(r * (P - 1))
+        return Tmat
+
+    if A is None or B is None:
+        raise ValueError("A and B must be provided when kronecker_only=False")
+    
     k1 = A[0].shape[0]
     k2 = B[0].shape[0]
     P = len(A)
@@ -131,8 +209,28 @@ def kalman_smoother_dmfm(
     *,
     Phi: list[np.ndarray] | None = None,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> dict:
-    """Kalman smoother for the dynamic matrix factor model.
+    r"""Kalman smoother for the dynamic matrix factor model.
+
+    Model Equations
+    ----------------
+    The state equation assumes a matrix autoregressive process of order ``P``
+    for the vectorized factors
+
+    .. math::
+
+       \operatorname{vec}(F_t) = \sum_{l=1}^P \Phi_l\,\operatorname{vec}(F_{t-l}) + \varepsilon_t,
+       \qquad \varepsilon_t \sim \mathcal{N}(0, P \otimes Q),
+
+    while the observation equation is
+
+    .. math::
+
+       \operatorname{vec}(Y_t) = (C \otimes R)\,\operatorname{vec}(F_t) + u_t,
+       \qquad u_t \sim \mathcal{N}(0, K \otimes H).
+
+    The Kalman matrices therefore exhibit a Kronecker structure.
 
     Parameters
     ----------
@@ -150,6 +248,8 @@ def kalman_smoother_dmfm(
     Pmat, Qmat : ndarray or None, optional
         Innovation covariance matrices for the MAR(P) process. If ``None``
         identity matrices are used.
+    diagonal_idiosyncratic : bool, optional
+        If ``True`` treat ``H`` and ``K`` as diagonal matrices.
 
     Returns
     -------
@@ -182,17 +282,18 @@ def kalman_smoother_dmfm(
         Tmat = np.eye(r)
         Q_full = Qx
     else:
-        if kronecker_only:
-            Tmat = np.zeros((d, d))
-            Tmat[:r, : r * P] = np.hstack(Phi_list)
-            if P > 1:
-                Tmat[r:, :-r] = np.eye(r * (P - 1))
-        else:
-            Tmat = _construct_state_matrices(A, B)
+        Tmat = _construct_state_matrices(
+            A if not kronecker_only else None,
+            B if not kronecker_only else None,
+            Phi=Phi_list if kronecker_only else None,
+            kronecker_only=kronecker_only,
+        )
         Q_full = np.zeros((d, d))
         Q_full[:r, :r] = Qx
 
     R_full = np.kron(K, H)
+    if diagonal_idiosyncratic:
+        R_full = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
     Z0 = np.kron(C, R)
     if i1_factors:
         Z_full = Z0
@@ -264,6 +365,8 @@ def kalman_smoother_dmfm(
     loglik = 0.0
     Z_base = np.kron(C, R)
     Sigma_U_base = np.kron(K, H)
+    if diagonal_idiosyncratic:
+        Sigma_U_base = np.kron(np.diag(np.diag(K)), np.diag(np.diag(H)))
     for t in range(Tn):
         f_t = xs[t, :r]
         Vt = Vs[t, :r, :r]
@@ -307,8 +410,26 @@ def qml_loglik_dmfm(
     *,
     Phi: list[np.ndarray] | None = None,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> float:
-    """Return QML log-likelihood using the Kalman filter."""
+    r"""Return QML log-likelihood using the Kalman filter.
+
+    Mathematical Formulation
+    -----------------------
+    The Gaussian quasi log-likelihood evaluated at parameters
+    :math:`\theta` is
+
+    .. math::
+
+       \ell(\theta) = -\tfrac{1}{2} \sum_{t=1}^T\left[
+           \log\det\Sigma_t + (y_t-\mu_t)'\Sigma_t^{-1}(y_t-\mu_t)
+           + p\log(2\pi)
+       \right],
+
+    where :math:`y_t` are the observed (vectorized) data and
+    :math:`\Sigma_t` the innovation covariance matrices produced by the
+    Kalman filter.
+    """
 
     out = kalman_smoother_dmfm(
         Y,
@@ -324,6 +445,7 @@ def qml_loglik_dmfm(
         i1_factors=i1_factors,
         Phi=Phi,
         kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     return float(out["loglik"])
 
@@ -414,6 +536,10 @@ def qml_objective_dmfm(
     Y: np.ndarray,
     shape_info: dict,
     mask: np.ndarray | None = None,
+    *,
+    Phi: list[np.ndarray] | None = None,
+    kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> float:
     """Return negative QML log-likelihood for optimization."""
 
@@ -429,6 +555,9 @@ def qml_objective_dmfm(
         mask,
         Pmat,
         Qmat,
+        Phi=Phi,
+        kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     return -float(out["loglik"])
 
@@ -440,6 +569,7 @@ def optimize_qml_dmfm(
     P: int,
     mask: np.ndarray | None = None,
     init_params: dict | None = None,
+    diagonal_idiosyncratic: bool = False,
 ) -> dict:
     """Optimize the QML objective for the DMFM."""
 
@@ -467,7 +597,9 @@ def optimize_qml_dmfm(
         init_params.get("Q", np.eye(k2)),
     )
 
-    obj = lambda v: qml_objective_dmfm(v, Y, shape_info, mask)
+    obj = lambda v: qml_objective_dmfm(
+        v, Y, shape_info, mask, diagonal_idiosyncratic=diagonal_idiosyncratic
+    )
     if minimize is not None:
         res = minimize(obj, x0, method="L-BFGS-B")
         opt_x = res.x
@@ -488,6 +620,7 @@ def optimize_qml_dmfm(
         mask,
         Pmat,
         Qmat,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
 
     return {
@@ -514,8 +647,31 @@ def em_step_dmfm(
     i1_factors: bool = False,
     *,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> tuple[dict, float, float]:
-    """Perform one EM iteration for the DMFM.
+    r"""Perform one EM iteration for the DMFM.
+
+    Mathematical Formulation
+    -----------------------
+    E-step: compute expectations using the Kalman smoother
+
+    .. math::
+
+        \mathbb{E}[F_t \mid Y_{1:T}],\quad
+        \mathbb{E}[F_t F_t'],\quad
+        \mathbb{E}[F_t F_{t-1}'].
+
+    M-step: update loadings and dynamics by least squares, e.g.
+
+    .. math::
+
+        \min_R \sum_t \|Y_t - R F_t C'\|^2,
+
+    and, if ``kronecker_only=False``,
+
+    .. math::
+
+        \min_{A_l,B_l} \sum_t \|F_t - \sum_{l=1}^P A_l F_{t-l} B_l'\|^2.
 
     Parameters
     ----------
@@ -534,6 +690,8 @@ def em_step_dmfm(
     kronecker_only : bool, optional
         If ``True`` estimate and use MAR dynamics directly for ``vec(F_t)`` via
         stacked Kronecker matrices ``Phi``.
+    diagonal_idiosyncratic : bool, optional
+        If ``True`` restrict ``H`` and ``K`` to be diagonal.
     
     Returns
     -------
@@ -556,6 +714,7 @@ def em_step_dmfm(
             i1_factors=i1_factors,
             Phi=params.get("Phi"),
             kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         return params, 0.0, ll
     
@@ -585,6 +744,7 @@ def em_step_dmfm(
         i1_factors=i1_factors,
         Phi=params.get("Phi"),
         kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     F = smooth["F_smooth"]
     Tn, p1, p2 = Y.shape
@@ -657,9 +817,7 @@ def em_step_dmfm(
                 XTX = Xmat.T @ Xmat
                 lam = 1e-6
                 coeff = np.linalg.solve(XTX + lam * np.eye(XTX.shape[0]), Xmat.T @ Ymat)
-                Phi_new = [
-                    coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)
-                ]
+                Phi_new = [coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)]
             else:
                 Phi_new = params.get("Phi")
             A_new = A
@@ -710,10 +868,12 @@ def em_step_dmfm(
         if kronecker_only:
             d = k1 * k2 * Pord
             r = k1 * k2
-            Tmat_new = np.zeros((d, d))
-            Tmat_new[:r, : r * Pord] = np.hstack(Phi_new)
-            if Pord > 1:
-                Tmat_new[r:, :-r] = np.eye(r * (Pord - 1))
+            Tmat_new = _construct_state_matrices(
+                None,
+                None,
+                Phi=Phi_new,
+                kronecker_only=True,
+            )
         else:
             Tmat_new = _construct_state_matrices(A_new, B_new)
             d = k1 * k2 * Pord
@@ -794,6 +954,9 @@ def em_step_dmfm(
     K_new /= denom_K
     H_new = 0.5 * (H_new + H_new.T)
     K_new = 0.5 * (K_new + K_new.T)
+    if diagonal_idiosyncratic:
+        H_new = np.diag(np.diag(H_new))
+        K_new = np.diag(np.diag(K_new))
     tr_H = np.trace(H_new)
     tr_K = np.trace(K_new)
     if tr_H > 0:
@@ -828,6 +991,7 @@ def em_step_dmfm(
         i1_factors=i1_factors,
         Phi=new_params.get("Phi"),
         kronecker_only=kronecker_only,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     new_params["F"] = smooth_new["F_smooth"]
     ll = smooth_new["loglik"]
@@ -857,11 +1021,29 @@ def fit_dmfm_em(
     nonstationary: bool = False,
     i1_factors: bool = False,
     return_se: bool = False,
+    return_se_dynamics: bool = False,
     use_qml_opt: bool = False,
+    return_trend_decomp: bool = False,
+    unit_root_test: str | None = None,
     *,
     kronecker_only: bool = False,
+    diagonal_idiosyncratic: bool = False,
 ) -> dict:
-    """Fit a dynamic matrix factor model using the EM algorithm.
+    r"""Fit a dynamic matrix factor model using the EM algorithm.
+
+    Convergence Criterion
+    --------------------
+    Iterations stop when the relative change in parameters satisfies
+
+    .. math::
+
+       \Delta = \frac{\|\theta^{(k)} - \theta^{(k-1)}\|}{\|\theta^{(k-1)}\|} < \text{tol}.
+
+    If ``i1_factors=True`` the factor dynamics follow
+
+    .. math::
+
+       \Delta F_t = \sum_{l=1}^P \Phi_l \Delta F_{t-l} + \varepsilon_t.
 
     Parameters
     ----------
@@ -885,14 +1067,28 @@ def fit_dmfm_em(
     return_se : bool, optional
         If ``True`` the dictionary additionally contains a ``"standard_errors"``
         field with standard errors for ``R`` and ``C``.
+    return_se_dynamics : bool, optional
+        If ``True`` include standard errors for the MAR dynamics ``A`` and ``B``.
+    return_trend_decomp : bool, optional
+        If ``True`` and ``i1_factors`` is ``True``, the output includes a
+        trend decomposition of the latent factors.
+    unit_root_test : {'adf', 'kpss'} or None, optional
+        If provided, perform a unit root test on the estimated factors and
+        include the results in the output dictionary.
     kronecker_only : bool, optional
         Estimate the MAR dynamics for ``vec(F_t)`` directly using stacked
         transition matrices ``Phi``.
+    diagonal_idiosyncratic : bool, optional
+        If ``True`` restrict ``H`` and ``K`` to be diagonal during estimation.
     
     Returns
     -------
     dict
-        Fitted parameters, smoothed factors and log-likelihood trace.
+        Fitted parameters, smoothed factors and log-likelihood trace. The output
+        contains additional fields ``'aic'``, ``'bic'`` and ``'n_params'``. If
+        ``return_se_dynamics`` is ``True`` standard errors for ``A`` and ``B``
+        are returned under ``'standard_errors_dynamics'``. If ``unit_root_test``
+        is specified the test results are stored in ``'unit_root_tests'``.
     """
     if use_qml_opt:
         res = optimize_qml_dmfm(
@@ -902,6 +1098,7 @@ def fit_dmfm_em(
             P,
             mask=mask,
             init_params=None,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         if return_se:
             res["standard_errors"] = compute_standard_errors_dmfm(
@@ -909,8 +1106,8 @@ def fit_dmfm_em(
             )
         return res
     
-    params = initialize_dmfm(Y, k1, k2, P, mask)
-    if nonstationary:
+    params = initialize_dmfm(Y, k1, k2, P, mask, method="pe")
+    if nonstationary or kronecker_only:
         params["A"] = [np.eye(k1) for _ in range(P)]
         params["B"] = [np.eye(k2) for _ in range(P)]
     loglik_trace: list[float] = []
@@ -925,6 +1122,7 @@ def fit_dmfm_em(
             nonstationary,
             i1_factors=i1_factors,
             kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         ll_change = ll - last_ll if np.isfinite(last_ll) else np.inf
         diff_trace.append(diff)
@@ -946,6 +1144,32 @@ def fit_dmfm_em(
         params["standard_errors"] = compute_standard_errors_dmfm(
             Y, params["R"], params["C"], params["F"], mask
         )
+    if return_se_dynamics:
+        params["standard_errors_dynamics"] = compute_standard_errors_dynamics(
+            params["F"], params["A"], params["B"]
+        )
+    if i1_factors and return_trend_decomp:
+        params["trend_decomposition"] = identify_dmfm_trends(params["F"])
+    if unit_root_test is not None:
+        params["unit_root_tests"] = test_unit_root_factors(params["F"], method=unit_root_test)
+
+    # information criteria and parameter count
+    Tn, p1, p2 = Y.shape
+    n_params = (
+        p1 * k1
+        + p2 * k2
+        + P * (k1**2 + k2**2)
+        + (p1 * (p1 + 1) // 2 if not diagonal_idiosyncratic else p1)
+        + (p2 * (p2 + 1) // 2 if not diagonal_idiosyncratic else p2)
+        + k1 * (k1 + 1) // 2
+        + k2 * (k2 + 1) // 2
+    )
+    n_params = int(n_params)
+    final_ll = loglik_trace[-1] if loglik_trace else np.nan
+    params["n_params"] = n_params
+    params["aic"] = -2.0 * final_ll + 2.0 * n_params
+    params["bic"] = -2.0 * final_ll + np.log(Tn * p1 * p2) * n_params
+    params["lag_order"] = P
     return params
 
 
@@ -1042,6 +1266,222 @@ def compute_standard_errors_dmfm(
     ci_C = np.stack([C - 1.96 * se_C, C + 1.96 * se_C], axis=-1)
 
     return {"se_R": se_R, "se_C": se_C, "ci_R": ci_R, "ci_C": ci_C}
+
+
+def compute_standard_errors_dynamics(
+    F: np.ndarray, A: Sequence[np.ndarray], B: Sequence[np.ndarray]
+) -> dict:
+    """Return standard errors for MAR dynamics.
+
+    Parameters
+    ----------
+    F : ndarray
+        Smoothed factors ``(T, k1, k2)``.
+    A, B : sequence of ndarray
+        Estimated MAR coefficient matrices.
+
+    Returns
+    -------
+    dict
+        Dictionary with lists ``se_A`` and ``se_B`` containing the standard
+        errors for each lag matrix.
+    """
+
+    F = np.asarray(F, dtype=float)
+    P = len(A)
+    Tn, k1, k2 = F.shape
+
+    se_A = [np.zeros_like(A[l]) for l in range(P)]
+    se_B = [np.zeros_like(B[l]) for l in range(P)]
+
+    for ell in range(P):
+        # standard errors for A_ell
+        for i1 in range(k1):
+            X_stack = []
+            y_stack = []
+            for t in range(ell + 1, Tn):
+                F_pred_other = np.zeros((k1, k2))
+                for j in range(P):
+                    if j == ell:
+                        continue
+                    if t - j - 1 < 0:
+                        continue
+                    F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+                Y_res = F[t] - F_pred_other
+                X_A = F[t - ell - 1] @ B[ell].T
+                for j2 in range(k2):
+                    X_stack.append(X_A[:, j2])
+                    y_stack.append(Y_res[i1, j2])
+            if X_stack:
+                Xmat = np.vstack(X_stack)
+                yvec = np.array(y_stack)
+                XtX = Xmat.T @ Xmat
+                beta = A[ell][i1]
+                resid = yvec - Xmat @ beta
+                if yvec.size > k1:
+                    sigma2 = float(resid @ resid) / max(1.0, yvec.size - k1)
+                else:
+                    sigma2 = 0.0
+                cov = sigma2 * inv(XtX + 1e-8 * np.eye(k1))
+                se_A[ell][i1] = np.sqrt(np.diag(cov))
+
+        # standard errors for B_ell
+        for j1 in range(k2):
+            X_stack = []
+            y_stack = []
+            for t in range(ell + 1, Tn):
+                F_pred_other = np.zeros((k1, k2))
+                for j in range(P):
+                    if j == ell:
+                        continue
+                    if t - j - 1 < 0:
+                        continue
+                    F_pred_other += A[j] @ F[t - j - 1] @ B[j].T
+                Y_res_T = F[t].T - F_pred_other.T
+                X_B = F[t - ell - 1].T @ A[ell].T
+                for i2 in range(k1):
+                    X_stack.append(X_B[:, i2])
+                    y_stack.append(Y_res_T[j1, i2])
+            if X_stack:
+                Xmat = np.vstack(X_stack)
+                yvec = np.array(y_stack)
+                XtX = Xmat.T @ Xmat
+                beta = B[ell][j1]
+                resid = yvec - Xmat @ beta
+                if yvec.size > k2:
+                    sigma2 = float(resid @ resid) / max(1.0, yvec.size - k2)
+                else:
+                    sigma2 = 0.0
+                cov = sigma2 * inv(XtX + 1e-8 * np.eye(k2))
+                se_B[ell][j1] = np.sqrt(np.diag(cov))
+
+    return {"se_A": se_A, "se_B": se_B}
+
+
+def identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
+    r"""Identify common stochastic trends in the factor path.
+
+    Trend Decomposition
+    -------------------
+    Let :math:`\Delta F_t = F_t - F_{t-1}` and define
+
+    .. math::
+
+       \Sigma = \frac{1}{T-1} \sum_t \Delta F_t \Delta F_t'.
+
+    An eigen-decomposition ``Sigma = V \Lambda V'`` determines the number
+    of trends by the cumulative share of eigenvalues exceeding ``threshold``.
+
+    Parameters
+    ----------
+    F : ndarray
+        Smoothed factor path of shape ``(T, k1, k2)``.
+    threshold : float, optional
+        Eigenvalue share cutoff determining the number of trends.
+
+    Returns
+    -------
+    dict
+        Dictionary with the number of trends, orthonormal bases for the
+        trend and cycle spaces and the projected components.
+    """
+
+    F = np.asarray(F, dtype=float)
+    if F.ndim != 3:
+        raise ValueError("F must be a 3D array")
+    Tn, k1, k2 = F.shape
+    r_total = k1 * k2
+    if Tn < 2:
+        raise ValueError("F must contain at least two time points")
+
+    X = F.reshape(Tn, r_total)
+    dX = np.diff(X, axis=0)
+    Sigma = dX.T @ dX / max(1, Tn - 1)
+    Sigma = 0.5 * (Sigma + Sigma.T)
+
+    evals, evecs = np.linalg.eigh(Sigma)
+    idx = np.argsort(evals)[::-1]
+    evals = evals[idx]
+    evecs = evecs[:, idx]
+
+    total = np.sum(evals)
+    if total <= 0:
+        r = 0
+    else:
+        cum = np.cumsum(evals) / total
+        r = int(np.searchsorted(cum, threshold) + 1)
+    r = min(r, r_total)
+
+    trend_basis = evecs[:, :r]
+    cycle_basis = evecs[:, r:]
+    F_trend = X @ trend_basis
+    F_cycle = X @ cycle_basis
+
+    return {
+        "r": int(r),
+        "trend_basis": trend_basis,
+        "cycle_basis": cycle_basis,
+        "F_trend": F_trend,
+        "F_cycle": F_cycle,
+    }
+
+
+def test_unit_root_factors(F: np.ndarray, method: str = "adf") -> dict:
+    """Perform unit root tests on the latent factors.
+
+    Parameters
+    ----------
+    F : ndarray
+        Factor array of shape ``(T, k1, k2)``.
+    method : {{'adf', 'kpss'}}, optional
+        Test to perform. Only a simple ADF implementation is provided if
+        ``'statsmodels'`` is unavailable. ``'kpss'`` falls back to a basic
+        implementation.
+
+    Returns
+    -------
+    dict
+        Mapping from factor indices to ``(statistic, pvalue)`` tuples.
+    """
+
+    F = np.asarray(F, dtype=float)
+    if F.ndim != 3:
+        raise ValueError("F must be a 3D array")
+    Tn, k1, k2 = F.shape
+
+    from math import sqrt
+    from scipy.stats import t as student_t
+
+    def _adf(x: np.ndarray) -> tuple[float, float]:
+        x = np.asarray(x, dtype=float)
+        dx = np.diff(x)
+        lag_x = x[:-1]
+        X = np.column_stack([lag_x, np.ones_like(lag_x)])
+        beta, *_ = np.linalg.lstsq(X, dx, rcond=None)
+        resid = dx - X @ beta
+        s2 = (resid @ resid) / max(1.0, len(dx) - 2)
+        se = sqrt(s2 * inv(X.T @ X)[0, 0])
+        t_stat = beta[0] / se if se > 0 else 0.0
+        pval = 2 * (1 - student_t.cdf(abs(t_stat), df=max(1, len(dx) - 2)))
+        return float(t_stat), float(pval)
+
+    results: dict = {}
+    for i in range(k1):
+        for j in range(k2):
+            series = F[:, i, j]
+            if method == "adf":
+                stat, pval = _adf(series)
+            else:
+                # simple KPSS with constant
+                y = series - np.mean(series)
+                s = np.cumsum(y)
+                eta = np.sum(s ** 2) / (Tn ** 2)
+                var = np.var(y, ddof=1)
+                stat = eta / var if var > 0 else 0.0
+                pval = np.nan
+            results[f"f{i}_{j}"] = (stat, pval)
+
+    return results
 
 
 def select_dmfm_rank(
@@ -1169,8 +1609,8 @@ def select_dmfm_qml(
                     p1 * k1
                     + p2 * k2
                     + P * (k1**2 + k2**2)
-                    + p1
-                    + p2
+                    + p1 * (p1 + 1) / 2
+                    + p2 * (p2 + 1) / 2
                     + k1 * (k1 + 1) / 2
                     + k2 * (k2 + 1) / 2
                 )
@@ -1184,3 +1624,367 @@ def select_dmfm_qml(
                     best_cfg = (k1, k2, P)
 
     return best_cfg
+
+
+def forecast_dmfm(
+    steps: int,
+    params: dict,
+    F_last: np.ndarray | None = None,
+    return_factors: bool = False,
+) -> np.ndarray:
+    """Return multi-step forecasts of ``Y`` based on estimated parameters.
+
+    Parameters
+    ----------
+    steps : int
+        Number of steps ahead to forecast.
+    params : dict
+        Parameter dictionary as returned by :func:`fit_dmfm_em`.
+    F_last : ndarray or None, optional
+        Last ``P`` factor observations used as starting state. If ``None`` the
+        last smoothed factors from ``params['F']`` are used.
+    return_factors : bool, optional
+        If ``True`` additionally return the forecasted factor matrices.
+
+    Returns
+    -------
+    ndarray
+        Array of shape ``(steps, p1, p2)`` with the forecasts. If
+        ``return_factors`` is ``True`` the factor forecasts are returned as the
+        second value.
+    """
+
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+
+    R = params["R"]
+    C = params["C"]
+
+    if params.get("Phi") is not None:
+        Phi = params["Phi"]
+        Pord = len(Phi)
+        Tmat = _construct_state_matrices(None, None, Phi=Phi, kronecker_only=True)
+    else:
+        A = params["A"]
+        B = params["B"]
+        Pord = len(A)
+        Tmat = _construct_state_matrices(A, B)
+
+    k1 = R.shape[1]
+    k2 = C.shape[1]
+    r = k1 * k2
+
+    if F_last is None:
+        F_hist = params["F"]
+        if F_hist.shape[0] < Pord:
+            raise ValueError("Not enough factor history for forecasting")
+        F_last = F_hist[-Pord:]
+    F_last = np.asarray(F_last)
+    if F_last.ndim == 2:
+        F_last = F_last[None, ...]
+    if F_last.shape != (Pord, k1, k2):
+        raise ValueError("F_last has incompatible shape")
+
+    x = np.concatenate([F_last[-1 - l].reshape(-1) for l in range(Pord)])
+
+    F_fcst = np.zeros((steps, k1, k2))
+    for h in range(steps):
+        x = Tmat @ x
+        F_fcst[h] = x[:r].reshape(k1, k2)
+
+    Y_fcst = np.einsum("ij,tjk,kl->til", R, F_fcst, C.T)
+
+    if return_factors:
+        return Y_fcst, F_fcst
+    return Y_fcst
+
+
+def conditional_forecast_dmfm(
+    steps: int,
+    params: dict,
+    known_future: dict[int, np.ndarray] | None = None,
+    mask_future: dict[int, np.ndarray] | None = None,
+) -> np.ndarray:
+    """Return conditional forecasts using future known values.
+
+    Parameters
+    ----------
+    steps : int
+        Number of steps ahead to forecast.
+    params : dict
+        Parameter dictionary as returned by :func:`fit_dmfm_em`.
+    known_future : dict[int, ndarray] or None, optional
+        Mapping from step ``h`` (1-indexed) to matrices with known future
+        entries. Unknown locations should be ``np.nan``.
+    mask_future : dict[int, ndarray] or None, optional
+        Boolean masks indicating the known entries for each ``h``.
+
+    Returns
+    -------
+    ndarray
+        Array of shape ``(steps, p1, p2)`` with the conditional forecasts.
+    """
+
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+
+    R = params["R"]
+    C = params["C"]
+    Pmat = params.get("P", np.eye(R.shape[1]))
+    Qmat = params.get("Q", np.eye(C.shape[1]))
+
+    if params.get("Phi") is not None:
+        Phi = params["Phi"]
+        Pord = len(Phi)
+        Tmat = _construct_state_matrices(None, None, Phi=Phi, kronecker_only=True)
+    else:
+        A = params["A"]
+        B = params["B"]
+        Pord = len(A)
+        Tmat = _construct_state_matrices(A, B)
+
+    k1 = R.shape[1]
+    k2 = C.shape[1]
+    r = k1 * k2
+    d = r * Pord
+
+    F_hist = params["F"]
+    if F_hist.shape[0] < Pord:
+        raise ValueError("Not enough factor history for forecasting")
+    F_last = F_hist[-Pord:]
+    x = np.concatenate([F_last[-1 - l].reshape(-1) for l in range(Pord)])
+
+    Qx = np.kron(Qmat, Pmat)
+    Q_full = np.zeros((d, d))
+    Q_full[:r, :r] = Qx
+
+    R_full = np.kron(params["K"], params["H"])
+    Z0 = np.kron(C, R)
+    Z_full = np.hstack([Z0] + [np.zeros((R.shape[0] * C.shape[0], r)) for _ in range(Pord - 1)])
+
+    V = np.eye(d) * 1e2
+
+    Y_fcst = np.zeros((steps, R.shape[0], C.shape[0]))
+    for h in range(1, steps + 1):
+        # predict step
+        x = Tmat @ x
+        V = Tmat @ V @ Tmat.T + Q_full
+        y_pred = (R @ x[:r].reshape(k1, k2) @ C.T)
+
+        mask_h = None
+        if mask_future is not None:
+            mask_h = mask_future.get(h)
+        Y_obs = None
+        if known_future is not None:
+            Y_obs = known_future.get(h)
+        if mask_h is not None and Y_obs is not None and np.any(mask_h):
+            idx = mask_h.reshape(-1)
+            Z = Z_full[idx, :]
+            R_t = R_full[np.ix_(idx, idx)]
+            y_vec = Y_obs.reshape(-1)[idx]
+            S = Z @ V @ Z.T + R_t
+            S += 1e-8 * np.eye(S.shape[0])
+            K_gain = V @ Z.T @ inv(S)
+            x = x + K_gain @ (y_vec - Z @ x)
+            V = V - K_gain @ Z @ V
+            y_pred = R @ x[:r].reshape(k1, k2) @ C.T
+
+        Y_fcst[h - 1] = y_pred
+
+    return Y_fcst
+    
+
+def subsample_panel(
+    Y: np.ndarray,
+    B: int,
+    axis: str = "row",
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Split the panel into ``B`` random subsets along ``axis``.
+
+    Parameters
+    ----------
+    Y : ndarray
+        Data array ``(T, p1, p2)``.
+    B : int
+        Number of blocks to create.
+    axis : {'row', 'column'}, optional
+        Dimension along which to subsample.
+
+    Returns
+    -------
+    tuple[list[ndarray], list[ndarray]]
+        List of data blocks and the corresponding index arrays.
+    """
+
+    Y = np.asarray(Y, dtype=float)
+    Tn, p1, p2 = Y.shape
+    if axis not in {"row", "column"}:
+        raise ValueError("axis must be 'row' or 'column'")
+    n = p1 if axis == "row" else p2
+    if B <= 0:
+        raise ValueError("B must be positive")
+
+    rng = np.random.default_rng(0)
+    perm = rng.permutation(n)
+    splits = np.array_split(perm, B)
+
+    blocks = []
+    indices = []
+    for idx in splits:
+        if axis == "row":
+            blocks.append(Y[:, idx, :])
+        else:
+            blocks.append(Y[:, :, idx])
+        indices.append(idx)
+    return blocks, indices
+
+
+def fit_dmfm_local_qml(
+    Y_block: np.ndarray,
+    k1: int,
+    k2: int,
+    P: int,
+    **kwargs,
+) -> dict:
+    """Estimate DMFM parameters on a data block."""
+
+    res = fit_dmfm_em(Y_block, k1, k2, P, **kwargs)
+    res["local_loglik"] = res.get("loglik", [np.nan])[-1]
+    return res
+
+
+def aggregate_dmfm_estimates(
+    local_params: Sequence[dict],
+    indices: Sequence[np.ndarray],
+    *,
+    full_shape: tuple[int, int],
+    axis: str = "row",
+    weights: Iterable[float] | None = None,
+) -> dict:
+    """Aggregate local DMFM estimates into global parameters."""
+
+    if not local_params:
+        raise ValueError("local_params must not be empty")
+
+    p1, p2 = full_shape
+    k1 = local_params[0]["R"].shape[1]
+    k2 = local_params[0]["C"].shape[1]
+    Pord = len(local_params[0]["A"])
+
+    if weights is None:
+        weights = [1.0] * len(local_params)
+    weights = list(weights)
+
+    R_glob = np.zeros((p1, k1))
+    C_glob = np.zeros((p2, k2))
+    H_glob = np.zeros((p1, p1))
+    K_glob = np.zeros((p2, p2))
+    A_glob = [np.zeros((k1, k1)) for _ in range(Pord)]
+    B_glob = [np.zeros((k2, k2)) for _ in range(Pord)]
+    P_glob = np.zeros((k1, k1))
+    Q_glob = np.zeros((k2, k2))
+
+    R_count = np.zeros(p1)
+    H_count = np.zeros((p1, p1))
+    C_weight_total = 0.0
+    K_weight_total = 0.0
+    weight_sum = 0.0
+
+    for w, params, idx in zip(weights, local_params, indices):
+        weight_sum += w
+        if axis == "row":
+            R_glob[idx] += w * params["R"]
+            H_glob[np.ix_(idx, idx)] += w * params["H"]
+            R_count[idx] += w
+            H_count[np.ix_(idx, idx)] += w
+            C_glob += w * params["C"]
+            K_glob += w * params["K"]
+            C_weight_total += w
+            K_weight_total += w
+        else:
+            C_glob[idx] += w * params["C"]
+            K_glob[np.ix_(idx, idx)] += w * params["K"]
+            R_glob += w * params["R"]
+            H_glob += w * params["H"]
+            R_count += w
+            H_count += w
+            C_weight_total += w
+            K_weight_total += w
+
+        for l in range(Pord):
+            A_glob[l] += w * params["A"][l]
+            B_glob[l] += w * params["B"][l]
+        P_glob += w * params.get("P", np.eye(k1))
+        Q_glob += w * params.get("Q", np.eye(k2))
+
+    R_glob = np.divide(R_glob, R_count[:, None], out=np.zeros_like(R_glob), where=R_count[:, None] > 0)
+    H_glob = np.divide(H_glob, H_count, out=np.zeros_like(H_glob), where=H_count > 0)
+    if C_weight_total > 0:
+        C_glob /= C_weight_total
+        K_glob /= K_weight_total
+    for l in range(Pord):
+        A_glob[l] /= weight_sum
+        B_glob[l] /= weight_sum
+    P_glob /= weight_sum
+    Q_glob /= weight_sum
+
+    return {
+        "R": R_glob,
+        "C": C_glob,
+        "A": A_glob,
+        "B": B_glob,
+        "H": H_glob,
+        "K": K_glob,
+        "P": P_glob,
+        "Q": Q_glob,
+    }
+
+
+def fit_dmfm_distributed(
+    Y: np.ndarray,
+    B: int,
+    k1: int,
+    k2: int,
+    P: int,
+    axis: str = "row",
+    aggregation: str = "average",
+    n_jobs: int | None = None,
+    **kwargs,
+) -> dict:
+    """Distributed QMLE estimation via subsampling."""
+
+    Y = np.asarray(Y, dtype=float)
+    Tn, p1, p2 = Y.shape
+    blocks, idx_list = subsample_panel(Y, B, axis=axis)
+
+    def _fit(block):
+        return fit_dmfm_local_qml(block, k1, k2, P, **kwargs)
+
+    if Parallel is not None and (n_jobs is not None and n_jobs != 1):
+        locals_res = Parallel(n_jobs=n_jobs)(delayed(_fit)(b) for b in blocks)
+    else:
+        locals_res = [_fit(b) for b in blocks]
+
+    weights = [len(idx) for idx in idx_list]
+    params = aggregate_dmfm_estimates(
+        locals_res,
+        idx_list,
+        full_shape=(p1, p2),
+        axis=axis,
+        weights=weights,
+    )
+
+    smooth = kalman_smoother_dmfm(
+        Y,
+        params["R"],
+        params["C"],
+        params["A"],
+        params["B"],
+        params["H"],
+        params["K"],
+    )
+    params["F"] = smooth["F_smooth"]
+    params["loglik"] = [smooth["loglik"]]
+    params["frozen"] = True
+    return params
+    

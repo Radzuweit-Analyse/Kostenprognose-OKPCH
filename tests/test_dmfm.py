@@ -1,6 +1,10 @@
 import numpy as np
 import pytest
 
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import KPOKPCH
 
 
@@ -352,6 +356,13 @@ def test_construct_state_matrix_known_kronecker():
     assert np.allclose(Tmat[0, 0], 2)
 
 
+def test_construct_state_matrices_phi():
+    Phi = [np.array([[0.5]]), np.array([[0.2]])]
+    Tmat = KPOKPCH._construct_state_matrices(None, None, Phi=Phi, kronecker_only=True)
+    expected = np.array([[0.5, 0.2], [1.0, 0.0]])
+    assert np.allclose(Tmat, expected)
+
+
 def test_select_dmfm_rank_basic():
     Y = generate_data(T=6, p1=3, p2=4)
     k1, k2 = KPOKPCH.select_dmfm_rank(Y, max_k=2)
@@ -452,3 +463,99 @@ def test_fit_dmfm_em_qml_opt():
     Y = generate_data(T=4)
     res = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, use_qml_opt=True)
     assert res["R"].shape == (Y.shape[1], 1)
+
+
+def test_identify_dmfm_trends_shapes():
+    rng = np.random.default_rng(0)
+    F = rng.normal(size=(8, 2, 1))
+    out = KPOKPCH.identify_dmfm_trends(F)
+    r = out["r"]
+    assert 0 <= r <= 2
+    assert out["F_trend"].shape == (F.shape[0], r)
+    assert out["F_cycle"].shape[0] == F.shape[0]
+
+
+def test_fit_dmfm_em_trend_decomp():
+    Y = generate_data(T=6)
+    res = KPOKPCH.fit_dmfm_em(
+        Y,
+        1,
+        1,
+        1,
+        max_iter=2,
+        i1_factors=True,
+        return_trend_decomp=True,
+    )
+    td = res.get("trend_decomposition")
+    assert td is not None
+    assert td["F_trend"].shape[0] == Y.shape[0]
+
+
+def test_forecast_dmfm_basic():
+    Y = generate_data(T=6, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
+    fcst = KPOKPCH.forecast_dmfm(2, params)
+    assert fcst.shape == (2, 2, 2)
+    F_last = params["F"][-1]
+    A = params["A"][0]
+    B = params["B"][0]
+    expected_F1 = A @ F_last @ B.T
+    expected_Y1 = params["R"] @ expected_F1 @ params["C"].T
+    assert np.allclose(fcst[0], expected_Y1, atol=1e-6)
+
+
+def test_forecast_dmfm_return_factors():
+    Y = generate_data(T=5, p1=2, p2=2)
+    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    Y_fcst, F_fcst = KPOKPCH.forecast_dmfm(1, params, return_factors=True)
+    assert Y_fcst.shape == (1, 2, 2)
+    assert F_fcst.shape == (1, 1, 1)
+
+
+def test_subsample_panel_basic():
+    Y = generate_data(T=4, p1=4, p2=3)
+    blocks, idx = KPOKPCH.subsample_panel(Y, 2, axis="row")
+    assert len(blocks) == 2
+    assert sum(len(i) for i in idx) == Y.shape[1]
+
+
+def test_fit_dmfm_local_qml_runs():
+    Y = generate_data(T=4, p1=3, p2=2)
+    res = KPOKPCH.fit_dmfm_local_qml(Y, 1, 1, 1, max_iter=2)
+    assert "R" in res and "F" in res
+
+
+def test_fit_dmfm_distributed_runs():
+    Y = generate_data(T=5, p1=4, p2=3)
+    params = KPOKPCH.fit_dmfm_distributed(Y, B=2, k1=1, k2=1, P=1)
+    assert params["R"].shape == (Y.shape[1], 1)
+    assert params["C"].shape == (Y.shape[2], 1)
+    
+
+def test_standard_errors_dynamics_return():
+    Y = generate_data(T=6)
+    params = KPOKPCH.fit_dmfm_em(
+        Y,
+        1,
+        1,
+        1,
+        max_iter=2,
+        return_se=True,
+        return_se_dynamics=True,
+    )
+    se_dyn = params.get("standard_errors_dynamics")
+    assert se_dyn is not None
+    assert len(se_dyn["se_A"]) == 1
+    assert se_dyn["se_A"][0].shape == params["A"][0].shape
+    assert len(se_dyn["se_B"]) == 1
+    assert se_dyn["se_B"][0].shape == params["B"][0].shape
+    assert "aic" in params and "bic" in params and "n_params" in params
+    assert params["lag_order"] == 1
+
+
+def test_unit_root_factors_function():
+    rng = np.random.default_rng(0)
+    F = rng.normal(size=(6, 1, 1))
+    res = KPOKPCH.test_unit_root_factors(F)
+    key = list(res.keys())[0]
+    assert isinstance(res[key][0], float)
