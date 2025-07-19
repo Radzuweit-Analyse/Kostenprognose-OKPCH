@@ -531,3 +531,31 @@ def test_fit_dmfm_distributed_runs():
     assert params["R"].shape == (Y.shape[1], 1)
     assert params["C"].shape == (Y.shape[2], 1)
     
+
+def test_standard_errors_dynamics_return():
+    Y = generate_data(T=6)
+    params = KPOKPCH.fit_dmfm_em(
+        Y,
+        1,
+        1,
+        1,
+        max_iter=2,
+        return_se=True,
+        return_se_dynamics=True,
+    )
+    se_dyn = params.get("standard_errors_dynamics")
+    assert se_dyn is not None
+    assert len(se_dyn["se_A"]) == 1
+    assert se_dyn["se_A"][0].shape == params["A"][0].shape
+    assert len(se_dyn["se_B"]) == 1
+    assert se_dyn["se_B"][0].shape == params["B"][0].shape
+    assert "aic" in params and "bic" in params and "n_params" in params
+    assert params["lag_order"] == 1
+
+
+def test_unit_root_factors_function():
+    rng = np.random.default_rng(0)
+    F = rng.normal(size=(6, 1, 1))
+    res = KPOKPCH.test_unit_root_factors(F)
+    key = list(res.keys())[0]
+    assert isinstance(res[key][0], float)
