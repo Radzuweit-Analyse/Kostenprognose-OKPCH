@@ -1598,6 +1598,8 @@ def select_dmfm_qml(
     best_ic = np.inf
     best_cfg = (1, 1, 1)
     criterion = criterion.lower()
+    if criterion not in {"aic", "bic"}:
+        raise ValueError(f"Unknown criterion: {criterion}")
 
     for k1 in range(1, max_k + 1):
         for k2 in range(1, max_k + 1):
