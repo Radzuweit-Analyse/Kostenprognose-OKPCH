@@ -146,7 +146,11 @@ def _kalman_filter_dmfm(
             y_obs = y_vec[idx]
             S = Z @ V_prior @ Z.T + R_t
             S += 1e-8 * np.eye(S.shape[0])
-            K_gain = V_prior @ Z.T @ inv(S)
+            try:
+                S_inv = inv(S)
+            except np.linalg.LinAlgError:  # fallback for singular S
+                S_inv = np.linalg.pinv(S)
+            K_gain = V_prior @ Z.T @ S_inv
             x_post = x_prior + K_gain @ (y_obs - Z @ x_prior)
             V_post = V_prior - K_gain @ Z @ V_prior
         else:
@@ -179,7 +183,11 @@ def _kalman_smooth_dmfm(
     Vs[-1] = Pf[-1]
     J = np.zeros((Tn - 1, d, d))
     for t in range(Tn - 2, -1, -1):
-        J[t] = Pf[t] @ Tmat.T @ inv(Pp[t + 1] + 1e-8 * np.eye(d))
+        try:
+            inv_term = inv(Pp[t + 1] + 1e-8 * np.eye(d))
+        except np.linalg.LinAlgError:
+            inv_term = np.linalg.pinv(Pp[t + 1] + 1e-8 * np.eye(d))
+        J[t] = Pf[t] @ Tmat.T @ inv_term
         xs[t] = xf[t] + J[t] @ (xs[t + 1] - xp[t + 1])
         Vs[t] = Pf[t] + J[t] @ (Vs[t + 1] - Pp[t + 1]) @ J[t].T
     Vss = np.zeros((Tn - 1, d, d))
@@ -224,8 +232,12 @@ def _kalman_loglik_dmfm(
         Sigma_Y += 1e-8 * np.eye(idx.size)
         innov = y_vec[idx] - Z_t @ f_t
         sign, logdet = np.linalg.slogdet(Sigma_Y)
+        try:
+            Sigma_inv = inv(Sigma_Y)
+        except np.linalg.LinAlgError:
+            Sigma_inv = np.linalg.pinv(Sigma_Y)
         loglik -= 0.5 * (
-            logdet + innov.T @ inv(Sigma_Y) @ innov + idx.size * np.log(2 * np.pi)
+            logdet + innov.T @ Sigma_inv @ innov + idx.size * np.log(2 * np.pi)
         )
     return float(loglik)
 
@@ -1802,10 +1814,17 @@ def conditional_forecast_dmfm(
             y_vec = Y_obs.reshape(-1)[idx]
             S = Z @ V @ Z.T + R_t
             S += 1e-8 * np.eye(S.shape[0])
-            K_gain = V @ Z.T @ inv(S)
+            try:
+                S_inv = inv(S)
+            except np.linalg.LinAlgError:
+                S_inv = np.linalg.pinv(S)
+            K_gain = V @ Z.T @ S_inv
             x = x + K_gain @ (y_vec - Z @ x)
             V = V - K_gain @ Z @ V
             y_pred = R @ x[:r].reshape(k1, k2) @ C.T
+            # ensure known values are preserved exactly
+            y_pred = y_pred.copy()
+            y_pred[mask_h] = Y_obs[mask_h]
 
         Y_fcst[h - 1] = y_pred
 
