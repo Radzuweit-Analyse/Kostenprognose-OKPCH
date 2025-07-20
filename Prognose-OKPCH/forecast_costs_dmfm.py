@@ -6,7 +6,9 @@ from typing import List, Tuple
 import KPOKPCH
 
 
-def integrate_seasonal_diff(last_obs: np.ndarray, diffs: np.ndarray, period: int) -> np.ndarray:
+def integrate_seasonal_diff(
+    last_obs: np.ndarray, diffs: np.ndarray, period: int
+) -> np.ndarray:
     """Return level forecasts from seasonal differences."""
 
     history = list(np.asarray(last_obs))
@@ -111,16 +113,36 @@ def main():
     fcst = fcst_levels[:, :, 0] * scale
     future_periods = generate_future_periods(periods[-1], steps)
 
-    # Compute yearly totals for each canton from the quarterly forecasts
-    yearly_totals = {}
-    quarter_counts = {}
+    # Compute yearly totals from historical and forecast data. If the last
+    # historical year is incomplete, use its available quarters together with
+    # the forecasts to produce a full-year total.
+    yearly_totals: dict[str, np.ndarray] = {}
+    quarter_counts: dict[str, int] = {}
+
+    # Accumulate historical quarters for the final year in the data
+    last_period = periods[-1]
+    last_year = last_period[:4]
+    last_quarter = int(last_period[-1])
+    for period, row in zip(periods, data):
+        year = period[:4]
+        if year == last_year and int(period[-1]) <= last_quarter:
+            yearly_totals.setdefault(year, np.zeros(data.shape[1]))
+            quarter_counts[year] = quarter_counts.get(year, 0) + 1
+            yearly_totals[year] += np.nan_to_num(row)
+
+    # Accumulate the forecast quarters
     for i, period in enumerate(future_periods):
         year = period[:4]
         yearly_totals.setdefault(year, np.zeros(fcst.shape[1]))
         quarter_counts[year] = quarter_counts.get(year, 0) + 1
         yearly_totals[year] += np.nan_to_num(fcst[i])
 
+    # Only display years where all four quarters are available from
+    # historical + forecast data.
+    start_year = int(last_year) if last_quarter < 4 else int(last_year) + 1
     for year in sorted(yearly_totals.keys()):
+        if int(year) < start_year:
+            continue
         if quarter_counts.get(year, 0) == 4:
             print(f"\nForecast totals for {year}:")
             for canton, value in zip(cantons, yearly_totals[year]):
@@ -143,7 +165,7 @@ def main():
     plt.legend()
     plt.tight_layout()
 
-    plt.savefig('forecast_plot.pdf')
+    plt.savefig("forecast_plot.pdf")
     plt.close()
 
 
