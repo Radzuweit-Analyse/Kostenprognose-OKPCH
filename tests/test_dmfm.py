@@ -102,6 +102,7 @@ def test_em_loglik_monotonicity():
     params2, diff2, ll2 = KPOKPCH.em_step_dmfm(Y, params1)
     assert np.isfinite(ll1) and np.isfinite(ll2)
 
+
 def test_fit_dmfm_em_convergence():
     rng = np.random.default_rng(1)
     T = 8
@@ -117,7 +118,6 @@ def test_fit_dmfm_em_convergence():
     loglik = params["loglik"]
     assert all(np.diff(loglik) >= -1e-6)
     assert np.linalg.norm(params["F"] - F_true) < 0.5
-
 
 
 def test_fit_with_high_missingness():
@@ -273,11 +273,6 @@ def test_kalman_output_cov_structure():
         assert np.allclose(V, V.T)
         eigvals = np.linalg.eigvalsh(V)
         assert np.all(eigvals >= -1e-8)
-
-
-def generate_data(T=4, p1=3, p2=2):
-    rng = np.random.default_rng(42)
-    return rng.normal(size=(T, p1, p2))
 
 
 def test_initialize_with_nan_values():
@@ -536,7 +531,7 @@ def test_fit_dmfm_distributed_runs():
     params = KPOKPCH.fit_dmfm_distributed(Y, B=2, k1=1, k2=1, P=1)
     assert params["R"].shape == (Y.shape[1], 1)
     assert params["C"].shape == (Y.shape[2], 1)
-    
+
 
 def test_standard_errors_dynamics_return():
     Y = generate_data(T=6)
@@ -682,14 +677,30 @@ def test_aggregate_dmfm_estimates_weighted():
         [local1, local2], idx, full_shape=(1, 1), axis="row", weights=weights
     )
     wsum = sum(weights)
-    assert np.allclose(res["R"], (weights[0] * local1["R"] + weights[1] * local2["R"]) / wsum)
-    assert np.allclose(res["C"], (weights[0] * local1["C"] + weights[1] * local2["C"]) / wsum)
-    assert np.allclose(res["H"], (weights[0] * local1["H"] + weights[1] * local2["H"]) / wsum)
-    assert np.allclose(res["K"], (weights[0] * local1["K"] + weights[1] * local2["K"]) / wsum)
-    assert np.allclose(res["A"][0], (weights[0] * local1["A"][0] + weights[1] * local2["A"][0]) / wsum)
-    assert np.allclose(res["B"][0], (weights[0] * local1["B"][0] + weights[1] * local2["B"][0]) / wsum)
-    assert np.allclose(res["P"], (weights[0] * local1["P"] + weights[1] * local2["P"]) / wsum)
-    assert np.allclose(res["Q"], (weights[0] * local1["Q"] + weights[1] * local2["Q"]) / wsum)
+    assert np.allclose(
+        res["R"], (weights[0] * local1["R"] + weights[1] * local2["R"]) / wsum
+    )
+    assert np.allclose(
+        res["C"], (weights[0] * local1["C"] + weights[1] * local2["C"]) / wsum
+    )
+    assert np.allclose(
+        res["H"], (weights[0] * local1["H"] + weights[1] * local2["H"]) / wsum
+    )
+    assert np.allclose(
+        res["K"], (weights[0] * local1["K"] + weights[1] * local2["K"]) / wsum
+    )
+    assert np.allclose(
+        res["A"][0], (weights[0] * local1["A"][0] + weights[1] * local2["A"][0]) / wsum
+    )
+    assert np.allclose(
+        res["B"][0], (weights[0] * local1["B"][0] + weights[1] * local2["B"][0]) / wsum
+    )
+    assert np.allclose(
+        res["P"], (weights[0] * local1["P"] + weights[1] * local2["P"]) / wsum
+    )
+    assert np.allclose(
+        res["Q"], (weights[0] * local1["Q"] + weights[1] * local2["Q"]) / wsum
+    )
 
 
 def test_aggregate_dmfm_estimates_empty():
