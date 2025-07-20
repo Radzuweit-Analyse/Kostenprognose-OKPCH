@@ -721,3 +721,10 @@ def test_forecast_dmfm_bad_last_shape():
     bad_F_last = np.zeros((2, 1, 1))
     with pytest.raises(ValueError):
         KPOKPCH.forecast_dmfm(1, params, F_last=bad_F_last)
+
+
+def test_seasonal_difference_basic():
+    Y = generate_data(T=6, p1=2, p2=2)
+    out = KPOKPCH.seasonal_difference(Y, period=2)
+    assert out.shape == (4, 2, 2)
+    assert np.allclose(out, Y[2:] - Y[:-2])
