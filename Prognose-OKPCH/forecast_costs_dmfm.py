@@ -67,7 +67,7 @@ def compute_q4_growth(periods: List[str], data: np.ndarray, fcst: np.ndarray, fu
 
 
 def main():
-    csv_path = "Prognose-OKPCH/health_costs_matrix.csv"
+    csv_path = "C:/Dev/KOSTENPROGNOSE-OKPCH/Prognose-OKPCH/health_costs_matrix.csv"
     periods, cantons, data = load_cost_matrix(csv_path)
     scale = 1000.0
     Y = (data / scale)[:, :, None]  # (T, cantons, 1)
