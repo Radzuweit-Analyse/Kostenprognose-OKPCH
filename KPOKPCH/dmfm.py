@@ -67,7 +67,9 @@ def _init_rc_f(
     return R, C, F
 
 
-def _init_idiosyncratic(Y_proj: np.ndarray, R: np.ndarray, C: np.ndarray, F: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _init_idiosyncratic(
+    Y_proj: np.ndarray, R: np.ndarray, C: np.ndarray, F: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """Return initial idiosyncratic covariance matrices ``H`` and ``K``."""
 
     T, p1, p2 = Y_proj.shape
@@ -93,7 +95,11 @@ def _init_idiosyncratic(Y_proj: np.ndarray, R: np.ndarray, C: np.ndarray, F: np.
     return H, K
 
 
-def _init_dynamics(k1: int, k2: int, P: int) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray]:
+def _init_dynamics(
+    k1: int, k2: int, P: int
+) -> tuple[
+    list[np.ndarray], list[np.ndarray], list[np.ndarray], np.ndarray, np.ndarray
+]:
     """Return initial MAR coefficients and innovation covariances."""
 
     A = [np.eye(k1) for _ in range(P)]
@@ -180,7 +186,7 @@ def _kalman_smooth_dmfm(
     for t in range(Tn - 1):
         Vss[t] = J[t] @ Vs[t + 1]
     return xs, Vs, Vss
-    
+
 
 def _kalman_loglik_dmfm(
     Y: np.ndarray,
@@ -326,7 +332,9 @@ def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
         X_rows = []
         Y_rows = []
         for t in range(Pord, F.shape[0]):
-            X_rows.append(np.concatenate([F[t - l - 1].reshape(-1) for l in range(Pord)]))
+            X_rows.append(
+                np.concatenate([F[t - l - 1].reshape(-1) for l in range(Pord)])
+            )
             Y_rows.append(F[t].reshape(-1))
         if X_rows:
             Xmat = np.vstack(X_rows)
@@ -380,7 +388,9 @@ def _update_innovations(F, Vs, Vss, A_new, B_new, Phi_new, i1_factors, kronecker
         if kronecker_only:
             d = k1 * k2 * Pord
             r = k1 * k2
-            Tmat_new = _construct_state_matrices(None, None, Phi=Phi_new, kronecker_only=True)
+            Tmat_new = _construct_state_matrices(
+                None, None, Phi=Phi_new, kronecker_only=True
+            )
         else:
             Tmat_new = _construct_state_matrices(A_new, B_new)
             d = k1 * k2 * Pord
@@ -651,7 +661,7 @@ def _construct_state_matrices(
     kronecker_only: bool = False,
 ) -> np.ndarray:
     """Return VAR(1) transition matrix for stacked MAR(P)."""
-    
+
     if kronecker_only:
         if Phi is None:
             raise ValueError("Phi must be provided when kronecker_only=True")
@@ -668,7 +678,7 @@ def _construct_state_matrices(
 
     if A is None or B is None:
         raise ValueError("A and B must be provided when kronecker_only=False")
-    
+
     k1 = A[0].shape[0]
     k2 = B[0].shape[0]
     P = len(A)
@@ -757,9 +767,7 @@ def kalman_smoother_dmfm(
     )
     xs, Vs, Vss = _kalman_smooth_dmfm(xp, Pp, xf, Pf, Tmat)
     F_smooth = xs[:, :r].reshape(Tn, k1, k2)
-    ll = _kalman_loglik_dmfm(
-        Y, mask, xs, Vs, R, C, H, K, diagonal_idiosyncratic
-    )
+    ll = _kalman_loglik_dmfm(Y, mask, xs, Vs, R, C, H, K, diagonal_idiosyncratic)
 
     return {
         "F_smooth": F_smooth,
@@ -1047,7 +1055,7 @@ def em_step_dmfm(
             diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         return params, 0.0, ll
-    
+
     F, Vs, Vss = _e_step(
         Y,
         params,
@@ -1128,7 +1136,7 @@ def fit_dmfm_em(
                 Y, res["R"], res["C"], res["F"], mask
             )
         return res
-    
+
     params = initialize_dmfm(Y, k1, k2, P, mask, method="pe")
     if nonstationary or kronecker_only:
         params["A"] = [np.eye(k1) for _ in range(P)]
@@ -1155,7 +1163,9 @@ def fit_dmfm_em(
     if i1_factors and return_trend_decomp:
         params["trend_decomposition"] = identify_dmfm_trends(params["F"])
     if unit_root_test is not None:
-        params["unit_root_tests"] = test_unit_root_factors(params["F"], method=unit_root_test)
+        params["unit_root_tests"] = test_unit_root_factors(
+            params["F"], method=unit_root_test
+        )
 
     # information criteria and parameter count
     Tn, p1, p2 = Y.shape
@@ -1479,7 +1489,7 @@ def test_unit_root_factors(F: np.ndarray, method: str = "adf") -> dict:
                 # simple KPSS with constant
                 y = series - np.mean(series)
                 s = np.cumsum(y)
-                eta = np.sum(s ** 2) / (Tn ** 2)
+                eta = np.sum(s**2) / (Tn**2)
                 var = np.var(y, ddof=1)
                 stat = eta / var if var > 0 else 0.0
                 pval = np.nan
@@ -1766,7 +1776,9 @@ def conditional_forecast_dmfm(
 
     R_full = np.kron(params["K"], params["H"])
     Z0 = np.kron(C, R)
-    Z_full = np.hstack([Z0] + [np.zeros((R.shape[0] * C.shape[0], r)) for _ in range(Pord - 1)])
+    Z_full = np.hstack(
+        [Z0] + [np.zeros((R.shape[0] * C.shape[0], r)) for _ in range(Pord - 1)]
+    )
 
     V = np.eye(d) * 1e2
 
@@ -1775,7 +1787,7 @@ def conditional_forecast_dmfm(
         # predict step
         x = Tmat @ x
         V = Tmat @ V @ Tmat.T + Q_full
-        y_pred = (R @ x[:r].reshape(k1, k2) @ C.T)
+        y_pred = R @ x[:r].reshape(k1, k2) @ C.T
 
         mask_h = None
         if mask_future is not None:
@@ -1798,7 +1810,7 @@ def conditional_forecast_dmfm(
         Y_fcst[h - 1] = y_pred
 
     return Y_fcst
-    
+
 
 def subsample_panel(
     Y: np.ndarray,
@@ -1923,7 +1935,9 @@ def aggregate_dmfm_estimates(
         P_glob += w * params.get("P", np.eye(k1))
         Q_glob += w * params.get("Q", np.eye(k2))
 
-    R_glob = np.divide(R_glob, R_count[:, None], out=np.zeros_like(R_glob), where=R_count[:, None] > 0)
+    R_glob = np.divide(
+        R_glob, R_count[:, None], out=np.zeros_like(R_glob), where=R_count[:, None] > 0
+    )
     H_glob = np.divide(H_glob, H_count, out=np.zeros_like(H_glob), where=H_count > 0)
     if C_weight_total > 0:
         C_glob /= C_weight_total
@@ -1993,4 +2007,3 @@ def fit_dmfm_distributed(
     params["loglik"] = [smooth["loglik"]]
     params["frozen"] = True
     return params
-    
