@@ -1,6 +1,8 @@
 import csv
+import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Tuple
+
 import KPOKPCH
 
 
@@ -90,17 +92,41 @@ def main():
     steps = 8  # two years ahead
     fcst = KPOKPCH.forecast_dmfm(steps, params)[:, :, 0] * scale
     future_periods = generate_future_periods(periods[-1], steps)
+
     # Compute yearly totals for each canton from the quarterly forecasts
     yearly_totals = {}
+    quarter_counts = {}
     for i, period in enumerate(future_periods):
         year = period[:4]
         yearly_totals.setdefault(year, np.zeros(fcst.shape[1]))
+        quarter_counts[year] = quarter_counts.get(year, 0) + 1
         yearly_totals[year] += np.nan_to_num(fcst[i])
 
     for year in sorted(yearly_totals.keys()):
-        print(f"\nForecast totals for {year}:")
-        for canton, value in zip(cantons, yearly_totals[year]):
-            print(f"  {canton}: {value:,.0f}")
+        if quarter_counts.get(year, 0) == 4:
+            print(f"\nForecast totals for {year}:")
+            for canton, value in zip(cantons, yearly_totals[year]):
+                print(f"  {canton}: {value:,.0f}")
+
+    # Plot historical data with forecasts appended
+    combined_periods = periods + future_periods
+    combined_data = np.vstack([data, fcst])
+
+    if "CH" in cantons:
+        idx = cantons.index("CH")
+    else:
+        idx = 0
+    plt.figure(figsize=(10, 6))
+    plt.plot(combined_periods, combined_data[:, idx], label=cantons[idx])
+    plt.xticks(rotation=45)
+    plt.xlabel("Period")
+    plt.ylabel("Cost")
+    plt.title("Historical and Forecasted Costs")
+    plt.legend()
+    plt.tight_layout()
+
+    plt.savefig('forecast_plot.pdf')
+    plt.close()
 
 
 if __name__ == "__main__":
