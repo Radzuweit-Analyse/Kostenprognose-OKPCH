@@ -560,6 +560,7 @@ def _m_step(
     params: dict,
     mask: np.ndarray | None,
     i1_factors: bool,
+    nonstationary: bool,
     *,
     kronecker_only: bool = False,
     diagonal_idiosyncratic: bool = False,
@@ -572,7 +573,14 @@ def _m_step(
     C_new = _update_col_loadings(Y, F, R_new, params["C"], mask)
     R_new, C_new, F = _orthonormalize_loadings(R_new, C_new, F)
     A_new, B_new, Phi_new = _update_dynamics(
-        F, params["A"], params["B"], Pord, k1, k2, False, kronecker_only
+        F,
+        params["A"],
+        params["B"],
+        Pord,
+        k1,
+        k2,
+        nonstationary,
+        kronecker_only,
     )
     P_new, Q_new = _update_innovations(
         F, Vs, Vss, A_new, B_new, Phi_new, i1_factors, kronecker_only
@@ -1085,6 +1093,7 @@ def em_step_dmfm(
         params,
         mask,
         i1_factors,
+        nonstationary,
         kronecker_only=kronecker_only,
         diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
