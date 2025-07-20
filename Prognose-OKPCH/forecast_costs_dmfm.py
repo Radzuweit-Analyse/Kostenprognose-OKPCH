@@ -8,7 +8,7 @@ def load_cost_matrix(path: str) -> Tuple[List[str], List[str], np.ndarray]:
     """Load canton cost matrix from CSV produced by prepare-MOKKE-data.py."""
     periods: List[str] = []
     data_rows = []
-    with open(path, newline='', encoding="utf-8") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         header = next(reader)
         cantons = header[1:]
@@ -38,7 +38,12 @@ def generate_future_periods(last_period: str, steps: int) -> List[str]:
     return periods
 
 
-def compute_q4_growth(periods: List[str], data: np.ndarray, fcst: np.ndarray, future_periods: List[str]) -> dict:
+def compute_q4_growth(
+    periods: List[str],
+    data: np.ndarray,
+    fcst: np.ndarray,
+    future_periods: List[str],
+) -> dict:
     base_idx = None
     for i in range(len(periods) - 1, -1, -1):
         if periods[i].endswith("Q4"):
@@ -76,14 +81,17 @@ def main():
     steps = 8  # two years ahead
     fcst = KPOKPCH.forecast_dmfm(steps, params)[:, :, 0] * scale
     future_periods = generate_future_periods(periods[-1], steps)
-    stats = compute_q4_growth(periods, data, fcst, future_periods)
+    # Compute yearly totals for each canton from the quarterly forecasts
+    yearly_totals = {}
+    for i, period in enumerate(future_periods):
+        year = period[:4]
+        yearly_totals.setdefault(year, np.zeros(fcst.shape[1]))
+        yearly_totals[year] += np.nan_to_num(fcst[i])
 
-    print("Year 1 Q4/Q4 mean increase: {:.2f}%".format(stats["mean_y1"]))
-    print("Std Dev: {:.2f}".format(stats["sd_y1"]))
-    print("10% CI: [{:.2f}, {:.2f}]".format(*stats["ci_y1"]))
-    print("Year 2 Q4/Q4 mean increase: {:.2f}%".format(stats["mean_y2"]))
-    print("Std Dev: {:.2f}".format(stats["sd_y2"]))
-    print("10% CI: [{:.2f}, {:.2f}]".format(*stats["ci_y2"]))
+    for year in sorted(yearly_totals.keys()):
+        print(f"\nForecast totals for {year}:")
+        for canton, value in zip(cantons, yearly_totals[year]):
+            print(f"  {canton}: {value:,.0f}")
 
 
 if __name__ == "__main__":
