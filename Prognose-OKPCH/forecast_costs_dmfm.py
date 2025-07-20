@@ -6,6 +6,19 @@ from typing import List, Tuple
 import KPOKPCH
 
 
+def integrate_seasonal_diff(last_obs: np.ndarray, diffs: np.ndarray, period: int) -> np.ndarray:
+    """Return level forecasts from seasonal differences."""
+
+    history = list(np.asarray(last_obs))
+    result = []
+    for diff in diffs:
+        baseline = history[-period]
+        next_level = diff + baseline
+        history.append(next_level)
+        result.append(next_level)
+    return np.stack(result, axis=0)
+
+
 def load_cost_matrix(path: str) -> Tuple[List[str], List[str], np.ndarray]:
     """Load canton cost matrix from CSV produced by prepare-MOKKE-data.py."""
     periods: List[str] = []
@@ -78,9 +91,12 @@ def main():
     periods, cantons, data = load_cost_matrix(csv_path)
     scale = 1000.0
     Y = (data / scale)[:, :, None]  # (T, cantons, 1)
-    mask = ~np.isnan(Y)
+
+    period = 4  # quarterly seasonality
+    Y_sd = KPOKPCH.seasonal_difference(Y, period)
+    mask = ~np.isnan(Y_sd)
     params = KPOKPCH.fit_dmfm_em(
-        Y,
+        Y_sd,
         k1=1,
         k2=1,
         P=1,
@@ -90,7 +106,9 @@ def main():
         i1_factors=True,
     )
     steps = 8  # two years ahead
-    fcst = KPOKPCH.forecast_dmfm(steps, params)[:, :, 0] * scale
+    fcst_diff = KPOKPCH.forecast_dmfm(steps, params)
+    fcst_levels = integrate_seasonal_diff(Y[-period:], fcst_diff, period)
+    fcst = fcst_levels[:, :, 0] * scale
     future_periods = generate_future_periods(periods[-1], steps)
 
     # Compute yearly totals for each canton from the quarterly forecasts
