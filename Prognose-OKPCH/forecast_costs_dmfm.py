@@ -77,7 +77,16 @@ def main():
     scale = 1000.0
     Y = (data / scale)[:, :, None]  # (T, cantons, 1)
     mask = ~np.isnan(Y)
-    params = KPOKPCH.fit_dmfm_em(Y, k1=1, k2=1, P=1, mask=mask, max_iter=50)
+    params = KPOKPCH.fit_dmfm_em(
+        Y,
+        k1=1,
+        k2=1,
+        P=1,
+        mask=mask,
+        max_iter=50,
+        nonstationary=True,
+        i1_factors=True,
+    )
     steps = 8  # two years ahead
     fcst = KPOKPCH.forecast_dmfm(steps, params)[:, :, 0] * scale
     future_periods = generate_future_periods(periods[-1], steps)
