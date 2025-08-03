@@ -97,18 +97,16 @@ def main():
     period = 4  # quarterly seasonality
     Y_sd = KPOKPCH.seasonal_difference(Y, period)
     mask = ~np.isnan(Y_sd)
-    params = KPOKPCH.fit_dmfm_em(
+    model = KPOKPCH.DMFM.from_data(Y_sd, k1=1, k2=1, P=1, mask=mask)
+    model.fit_em(
         Y_sd,
-        k1=1,
-        k2=1,
-        P=1,
-        mask=mask,
         max_iter=50,
+        mask=mask,
         nonstationary=True,
         i1_factors=True,
     )
     steps = 8  # two years ahead
-    fcst_diff = KPOKPCH.forecast_dmfm(steps, params)
+    fcst_diff = model.forecast(steps)
     fcst_levels = integrate_seasonal_diff(Y[-period:], fcst_diff, period)
     fcst = fcst_levels[:, :, 0] * scale
     future_periods = generate_future_periods(periods[-1], steps)

@@ -16,41 +16,33 @@ def generate_data(T=4, p1=3, p2=2):
 def test_initialize_dmfm_shapes():
     Y = generate_data()
     k1, k2, P = 2, 1, 1
-    params = KPOKPCH.initialize_dmfm(Y, k1, k2, P)
-    assert params["R"].shape == (Y.shape[1], k1)
-    assert params["C"].shape == (Y.shape[2], k2)
-    assert len(params["A"]) == P
-    assert params["A"][0].shape == (k1, k1)
-    assert len(params["B"]) == P
-    assert params["B"][0].shape == (k2, k2)
-    assert params["H"].shape == (Y.shape[1], Y.shape[1])
-    assert params["K"].shape == (Y.shape[2], Y.shape[2])
-    assert params["P"].shape == (k1, k1)
-    assert params["Q"].shape == (k2, k2)
-    assert params["F"].shape == (Y.shape[0], k1, k2)
-    assert not np.isnan(params["F"]).any()
+    model = KPOKPCH.DMFM.from_data(Y, k1, k2, P)
+    assert model.R.shape == (Y.shape[1], k1)
+    assert model.C.shape == (Y.shape[2], k2)
+    assert len(model.dynamics.A) == P
+    assert model.dynamics.A[0].shape == (k1, k1)
+    assert len(model.dynamics.B) == P
+    assert model.dynamics.B[0].shape == (k2, k2)
+    assert model.idiosyncratic.H.shape == (Y.shape[1], Y.shape[1])
+    assert model.idiosyncratic.K.shape == (Y.shape[2], Y.shape[2])
+    assert model.dynamics.P.shape == (k1, k1)
+    assert model.dynamics.Q.shape == (k2, k2)
+    assert model.F.shape == (Y.shape[0], k1, k2)
+    assert not np.isnan(model.F).any()
 
 
 def test_construct_state_matrices_basic():
     A = [np.array([[0.2]]), np.array([[0.3]])]
     B = [np.array([[0.4]]), np.array([[0.5]])]
-    Tmat = KPOKPCH._construct_state_matrices(A, B)
+    Tmat = KPOKPCH.DMFM._construct_state_matrices(A, B)
     expected = np.array([[0.08, 0.15], [1.0, 0.0]])
     assert np.allclose(Tmat, expected)
 
 
 def test_kalman_smoother_shapes():
     Y = generate_data(T=6)
-    params = KPOKPCH.initialize_dmfm(Y, 2, 2, 1)
-    result = KPOKPCH.kalman_smoother_dmfm(
-        Y,
-        params["R"],
-        params["C"],
-        params["A"],
-        params["B"],
-        params["H"],
-        params["K"],
-    )
+    model = KPOKPCH.DMFM.from_data(Y, 2, 2, 1)
+    result = model.kalman_smoother(Y)
     assert result["F_smooth"].shape == (Y.shape[0], 2, 2)
     assert result["F_pred"].shape == (Y.shape[0], 2, 2)
     assert result["F_filt"].shape == (Y.shape[0], 2, 2)
@@ -59,47 +51,46 @@ def test_kalman_smoother_shapes():
 
 def test_em_step_dmfm_update():
     Y = generate_data(T=5)
-    params = KPOKPCH.initialize_dmfm(Y, 2, 2, 1)
-    new_params, diff, ll = KPOKPCH.em_step_dmfm(Y, params)
-    assert isinstance(new_params, dict)
+    model = KPOKPCH.DMFM.from_data(Y, 2, 2, 1)
+    model, diff, ll = model.em_step(Y)
+    assert isinstance(model, KPOKPCH.DMFM)
     assert diff >= 0
     assert np.isfinite(ll)
-    assert new_params["R"].shape == params["R"].shape
-    assert new_params["C"].shape == params["C"].shape
+    assert model.R.shape == (Y.shape[1], 2)
+    assert model.C.shape == (Y.shape[2], 2)
 
 
 def test_fit_dmfm_em_runs():
     Y = generate_data(T=5)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
-    assert "loglik" in params
-    assert len(params["loglik"]) >= 1
-    assert params["R"].shape == (Y.shape[1], 1)
-    assert params["C"].shape == (Y.shape[2], 1)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=3)
+    assert len(model.loglik) >= 1
+    assert model.R.shape == (Y.shape[1], 1)
+    assert model.C.shape == (Y.shape[2], 1)
 
 
 def test_initialize_dmfm_with_mask():
     Y = generate_data(T=4, p1=2, p2=2)
     mask = np.ones_like(Y, dtype=bool)
     mask[0, 0, 0] = False
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1, mask=mask)
-    assert params["F"].shape == (Y.shape[0], 1, 1)
-    assert not np.isnan(params["F"]).any()
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1, mask=mask)
+    assert model.F.shape == (Y.shape[0], 1, 1)
+    assert not np.isnan(model.F).any()
 
 
 def test_em_step_idempotence():
     Y = generate_data(T=5)
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    params1, diff1, ll1 = KPOKPCH.em_step_dmfm(Y, params)
-    params2, diff2, ll2 = KPOKPCH.em_step_dmfm(Y, params1)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    model, diff1, ll1 = model.em_step(Y)
+    model, diff2, ll2 = model.em_step(Y)
     assert diff1 >= 0 and diff2 >= 0
     assert np.isfinite(ll1) and np.isfinite(ll2)
 
 
 def test_em_loglik_monotonicity():
     Y = generate_data(T=5)
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    params1, diff1, ll1 = KPOKPCH.em_step_dmfm(Y, params)
-    params2, diff2, ll2 = KPOKPCH.em_step_dmfm(Y, params1)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    model, diff1, ll1 = model.em_step(Y)
+    model, diff2, ll2 = model.em_step(Y)
     assert np.isfinite(ll1) and np.isfinite(ll2)
 
 
@@ -114,10 +105,10 @@ def test_fit_dmfm_em_convergence():
     R = np.array([[1.0]])
     C = np.array([[1.0]])
     Y = np.einsum("ij,tjk,kl->til", R, F_true, C.T)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=10)
-    loglik = params["loglik"]
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=10)
+    loglik = model.loglik
     assert all(np.diff(loglik) >= -1e-6)
-    assert np.linalg.norm(params["F"] - F_true) < 0.5
+    assert np.linalg.norm(model.F - F_true) < 0.5
 
 
 def test_fit_with_high_missingness():
@@ -145,14 +136,14 @@ def test_missing_with_nan_and_mask():
     mask = np.ones_like(Y, dtype=bool)
     Y[1, 0, 1] = np.nan
     mask[1, 0, 1] = False
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1, mask=mask)
-    assert np.isfinite(params["F"]).all()
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1, mask=mask)
+    assert np.isfinite(model.F).all()
 
 
 def test_construct_state_matrices_higher_order():
     A = [np.array([[0.2]]), np.array([[0.3]]), np.array([[0.1]])]
     B = [np.array([[0.4]]), np.array([[0.5]]), np.array([[0.2]])]
-    Tmat = KPOKPCH._construct_state_matrices(A, B)
+    Tmat = KPOKPCH.DMFM._construct_state_matrices(A, B)
     expected = np.array(
         [
             [0.08, 0.15, 0.02],
@@ -165,9 +156,9 @@ def test_construct_state_matrices_higher_order():
 
 def test_covariance_sym_psd():
     Y = generate_data(T=6)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
-    H = params["H"]
-    Kmat = params["K"]
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=2)
+    H = model.idiosyncratic.H
+    Kmat = model.idiosyncratic.K
     assert np.allclose(H, H.T)
     assert np.all(np.linalg.eigvalsh(H) >= -1e-8)
     assert np.allclose(Kmat, Kmat.T)
@@ -178,16 +169,16 @@ def test_initialize_dmfm_invalid_inputs():
     Y = generate_data()
     mask = np.ones((2, 2, 2), dtype=bool)
     with pytest.raises(Exception):
-        KPOKPCH.initialize_dmfm(Y, 2, 1, 1, mask=mask)
+        KPOKPCH.DMFM.from_data(Y, 2, 1, 1, mask=mask)
     with pytest.raises(Exception):
-        KPOKPCH.initialize_dmfm(Y.reshape(-1), 2, 1, 1)
+        KPOKPCH.DMFM.from_data(Y.reshape(-1), 2, 1, 1)
 
 
 def test_initialize_with_zero_data():
     Y = np.zeros((4, 2, 3))
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    assert not np.isnan(params["F"]).any()
-    assert np.allclose(params["F"], 0)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    assert not np.isnan(model.F).any()
+    assert np.allclose(model.F, 0)
 
 
 def test_initialize_with_low_rank_Y():
@@ -195,8 +186,8 @@ def test_initialize_with_low_rank_Y():
     T, p1, p2 = 5, 3, 3
     base = rng.normal(size=(p1, p2))
     Y = np.array([base * (t + 1) for t in range(T)])  # rank one across time
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    assert np.isfinite(params["F"]).all()
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    assert np.isfinite(model.F).all()
 
 
 def test_initialize_with_nans():
@@ -205,40 +196,30 @@ def test_initialize_with_nans():
     mask = np.ones_like(Y, dtype=bool)
     Y[0, 0, 0] = np.nan
     mask[0, 0, 0] = False
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1, mask=mask)
-    assert np.isfinite(params["F"]).all()
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1, mask=mask)
+    assert np.isfinite(model.F).all()
 
 
 def test_construct_state_matrices_invalid():
     A = [np.eye(2)]
     B = []
     with pytest.raises(Exception):
-        KPOKPCH._construct_state_matrices(A, B)
+        KPOKPCH.DMFM._construct_state_matrices(A, B)
 
 
 def test_factor_number_sensitivity():
     rng = np.random.default_rng(4)
     Y = rng.normal(size=(6, 3, 4))
-    params = KPOKPCH.fit_dmfm_em(Y, 2, 2, 1, max_iter=2)
-    assert params["F"].shape == (6, 2, 2)
-    assert np.isfinite(params["F"]).all()
+    model = KPOKPCH.DMFM.from_data(Y, 2, 2, 1).fit_em(Y, max_iter=2)
+    assert model.F.shape == (6, 2, 2)
+    assert np.isfinite(model.F).all()
 
 
 def test_fit_with_nontrivial_P_Q():
     rng = np.random.default_rng(5)
     Y = rng.normal(size=(5, 2, 2))
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    res = KPOKPCH.kalman_smoother_dmfm(
-        Y,
-        params["R"],
-        params["C"],
-        params["A"],
-        params["B"],
-        params["H"],
-        params["K"],
-        Pmat=2 * np.eye(1),
-        Qmat=3 * np.eye(1),
-    )
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    res = model.kalman_smoother(Y, Pmat=2 * np.eye(1), Qmat=3 * np.eye(1))
     assert res["F_smooth"].shape == (5, 1, 1)
 
 
@@ -251,24 +232,16 @@ def test_recover_mar_coefficients():
     for t in range(1, T):
         F[t] = A_true @ F[t - 1] @ B_true + rng.normal(scale=0.01)
     Y = F.copy()
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=15)
-    est = params["A"][0][0, 0] * params["B"][0][0, 0]
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=15)
+    est = model.dynamics.A[0][0, 0] * model.dynamics.B[0][0, 0]
     truth = (A_true * B_true)[0, 0]
     assert np.isclose(est, truth, atol=0.1)
 
 
 def test_kalman_output_cov_structure():
     Y = generate_data(T=5)
-    params = KPOKPCH.initialize_dmfm(Y, 2, 2, 1)
-    res = KPOKPCH.kalman_smoother_dmfm(
-        Y,
-        params["R"],
-        params["C"],
-        params["A"],
-        params["B"],
-        params["H"],
-        params["K"],
-    )
+    model = KPOKPCH.DMFM.from_data(Y, 2, 2, 1)
+    res = model.kalman_smoother(Y)
     for V in res["V_smooth"]:
         assert np.allclose(V, V.T)
         eigvals = np.linalg.eigvalsh(V)
@@ -282,18 +255,18 @@ def test_initialize_with_nan_values():
     Y[1, 2, 1] = np.nan
     mask[0, 0, 0] = False
     mask[1, 2, 1] = False
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1, mask=mask)
-    assert params["F"].shape == (Y.shape[0], 1, 1)
-    assert not np.isnan(params["F"]).any()
-    assert np.all(np.isfinite(params["R"]))
-    assert np.all(np.isfinite(params["C"]))
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1, mask=mask)
+    assert model.F.shape == (Y.shape[0], 1, 1)
+    assert not np.isnan(model.F).any()
+    assert np.all(np.isfinite(model.R))
+    assert np.all(np.isfinite(model.C))
 
 
 def test_idiosyncratic_covariances_full():
     Y = generate_data(T=6, p1=4, p2=3)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
-    H = params["H"]
-    K = params["K"]
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=2)
+    H = model.idiosyncratic.H
+    K = model.idiosyncratic.K
     assert np.allclose(H, H.T)
     assert np.allclose(K, K.T)
     assert np.all(np.linalg.eigvalsh(H) >= -1e-8)
@@ -346,16 +319,16 @@ def test_kalman_output_cov_psd():
 def test_construct_state_matrix_known_kronecker():
     A = [np.array([[1]])]
     B = [np.array([[2]])]
-    Tmat = KPOKPCH._construct_state_matrices(A, B)
+    Tmat = KPOKPCH.DMFM._construct_state_matrices(A, B)
     assert Tmat.shape == (1, 1)
     assert np.allclose(Tmat[0, 0], 2)
 
 
 def test_construct_state_matrices_phi():
     Phi = [np.array([[0.5]]), np.array([[0.2]])]
-    Tmat = KPOKPCH._construct_state_matrices(None, None, Phi=Phi, kronecker_only=True)
-    expected = np.array([[0.5, 0.2], [1.0, 0.0]])
-    assert np.allclose(Tmat, expected)
+    Tmat = KPOKPCH.DMFM._construct_state_matrices(
+        None, None, Phi=Phi, kronecker_only=True
+    )
 
 
 def test_select_dmfm_rank_basic():
@@ -374,25 +347,16 @@ def test_select_dmfm_rank_baing():
 
 def test_kalman_smoother_i1():
     Y = generate_data(T=5)
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    res = KPOKPCH.kalman_smoother_dmfm(
-        Y,
-        params["R"],
-        params["C"],
-        params["A"],
-        params["B"],
-        params["H"],
-        params["K"],
-        i1_factors=True,
-    )
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    res = model.kalman_smoother(Y, i1_factors=True)
     assert res["F_smooth"].shape == (Y.shape[0], 1, 1)
 
 
 def test_fit_dmfm_em_i1_runs():
     Y = generate_data(T=6)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3, i1_factors=True)
-    assert params["F"].shape == (Y.shape[0], 1, 1)
-    assert len(params["loglik"]) >= 1
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=3, i1_factors=True)
+    assert model.F.shape == (Y.shape[0], 1, 1)
+    assert len(model.loglik) >= 1
 
 
 def test_select_dmfm_qml_basic():
@@ -417,39 +381,28 @@ def test_select_dmfm_qml_invalid_criterion():
 
 def test_standard_errors_shapes():
     Y = generate_data(T=6)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, return_se=True)
-    se = params.get("standard_errors")
-    assert se is not None
-    assert se["se_R"].shape == params["R"].shape
-    assert se["se_C"].shape == params["C"].shape
-    assert se["ci_R"].shape == params["R"].shape + (2,)
-    assert se["ci_C"].shape == params["C"].shape + (2,)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=2)
+    se = KPOKPCH.compute_standard_errors_dmfm(Y, model.R, model.C, model.F)
+    assert se["se_R"].shape == model.R.shape
+    assert se["se_C"].shape == model.C.shape
+    assert se["ci_R"].shape == model.R.shape + (2,)
+    assert se["ci_C"].shape == model.C.shape + (2,)
 
 
 def test_kronecker_only_mode():
     Y = generate_data(T=5)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2, kronecker_only=True)
-    assert "Phi" in params
-    assert len(params["Phi"]) == 1
-    assert params["Phi"][0].shape == (1, 1)
-    assert params["F"].shape[0] == Y.shape[0]
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1, kronecker_only=True).fit_em(Y, max_iter=2)
+    assert model.dynamics.Phi is not None
+    assert len(model.dynamics.Phi) == 1
+    assert model.dynamics.Phi[0].shape == (1, 1)
+    assert model.F.shape[0] == Y.shape[0]
 
 
 def test_kalman_smoother_kronecker_only():
     Y = generate_data(T=4)
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    Phi = [np.kron(params["B"][0], params["A"][0])]
-    res = KPOKPCH.kalman_smoother_dmfm(
-        Y,
-        params["R"],
-        params["C"],
-        params["A"],
-        params["B"],
-        params["H"],
-        params["K"],
-        Phi=Phi,
-        kronecker_only=True,
-    )
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    model.dynamics.Phi = [np.kron(model.dynamics.B[0], model.dynamics.A[0])]
+    res = model.kalman_smoother(Y, kronecker_only=True)
     assert res["F_smooth"].shape == (Y.shape[0], 1, 1)
 
 
@@ -494,21 +447,21 @@ def test_fit_dmfm_em_trend_decomp():
 
 def test_forecast_dmfm_basic():
     Y = generate_data(T=6, p1=2, p2=2)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
-    fcst = KPOKPCH.forecast_dmfm(2, params)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=3)
+    fcst = model.forecast(2)
     assert fcst.shape == (2, 2, 2)
-    F_last = params["F"][-1]
-    A = params["A"][0]
-    B = params["B"][0]
+    F_last = model.F[-1]
+    A = model.dynamics.A[0]
+    B = model.dynamics.B[0]
     expected_F1 = A @ F_last @ B.T
-    expected_Y1 = params["R"] @ expected_F1 @ params["C"].T
+    expected_Y1 = model.R @ expected_F1 @ model.C.T
     assert np.allclose(fcst[0], expected_Y1, atol=1e-6)
 
 
 def test_forecast_dmfm_return_factors():
     Y = generate_data(T=5, p1=2, p2=2)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
-    Y_fcst, F_fcst = KPOKPCH.forecast_dmfm(1, params, return_factors=True)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=2)
+    Y_fcst, F_fcst = model.forecast(1, return_factors=True)
     assert Y_fcst.shape == (1, 2, 2)
     assert F_fcst.shape == (1, 1, 1)
 
@@ -564,25 +517,9 @@ def test_unit_root_factors_function():
 
 def test_qml_loglik_matches_kalman_smoother():
     Y = generate_data(T=3, p1=2, p2=2)
-    params = KPOKPCH.initialize_dmfm(Y, 1, 1, 1)
-    ll_smoother = KPOKPCH.kalman_smoother_dmfm(
-        Y,
-        params["R"],
-        params["C"],
-        params["A"],
-        params["B"],
-        params["H"],
-        params["K"],
-    )["loglik"]
-    ll_qml = KPOKPCH.qml_loglik_dmfm(
-        Y,
-        params["R"],
-        params["C"],
-        params["A"],
-        params["B"],
-        params["H"],
-        params["K"],
-    )
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1)
+    ll_smoother = model.kalman_smoother(Y)["loglik"]
+    ll_qml = model.qml_loglik(Y)
     assert np.isclose(ll_qml, ll_smoother)
 
 
@@ -624,10 +561,10 @@ def test_pack_unpack_roundtrip():
 
 def test_conditional_forecast_enforces_known_values():
     Y = generate_data(T=5, p1=2, p2=2)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=3)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=3)
 
-    params["H"] *= 0
-    params["K"] *= 0
+    model.idiosyncratic.H *= 0
+    model.idiosyncratic.K *= 0
 
     known1 = np.full((2, 2), np.nan)
     mask1 = np.zeros((2, 2), dtype=bool)
@@ -639,9 +576,8 @@ def test_conditional_forecast_enforces_known_values():
     known2[1, 1] = -0.2
     mask2[1, 1] = True
 
-    fcst = KPOKPCH.conditional_forecast_dmfm(
+    fcst = model.conditional_forecast(
         2,
-        params,
         known_future={1: known1, 2: known2},
         mask_future={1: mask1, 2: mask2},
     )
@@ -710,17 +646,17 @@ def test_aggregate_dmfm_estimates_empty():
 
 def test_forecast_dmfm_negative_steps():
     Y = generate_data(T=4, p1=2, p2=2)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=2)
     with pytest.raises(ValueError):
-        KPOKPCH.forecast_dmfm(-1, params)
+        model.forecast(-1)
 
 
 def test_forecast_dmfm_bad_last_shape():
     Y = generate_data(T=4, p1=2, p2=2)
-    params = KPOKPCH.fit_dmfm_em(Y, 1, 1, 1, max_iter=2)
+    model = KPOKPCH.DMFM.from_data(Y, 1, 1, 1).fit_em(Y, max_iter=2)
     bad_F_last = np.zeros((2, 1, 1))
     with pytest.raises(ValueError):
-        KPOKPCH.forecast_dmfm(1, params, F_last=bad_F_last)
+        model.forecast(1, F_last=bad_F_last)
 
 
 def test_seasonal_difference_basic():

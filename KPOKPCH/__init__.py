@@ -3,6 +3,7 @@ __version__ = "0.0.1"
 from importlib import import_module
 
 __all__ = [
+    "DMFM",
     "seasonal_difference",
     "initialize_dmfm",
     "_construct_state_matrices",

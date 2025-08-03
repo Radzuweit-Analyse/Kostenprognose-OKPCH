@@ -8,10 +8,11 @@ and full idiosyncratic covariance structure.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import numpy as np
 from numpy.linalg import inv, svd
-import warnings
 from typing import Iterable, Sequence
+import warnings
 
 try:  # pragma: no cover - optional joblib for parallel estimation
     from joblib import Parallel, delayed
@@ -19,6 +20,23 @@ except Exception:  # pragma: no cover - joblib not available
     Parallel = None
     delayed = None
 
+@dataclass
+class DynamicsParams:
+    """Container for dynamic parameters of the DMFM."""
+
+    A: list[np.ndarray]
+    B: list[np.ndarray]
+    P: np.ndarray
+    Q: np.ndarray
+    Phi: list[np.ndarray] | None = None
+
+
+@dataclass
+class IdiosyncraticParams:
+    """Container for idiosyncratic covariance matrices."""
+
+    H: np.ndarray
+    K: np.ndarray
 
 def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
     """Return seasonal differences of ``Y`` with the given period.
@@ -696,6 +714,280 @@ def initialize_dmfm(
         "Q": Qmat,
         "F": F,
     }
+
+class DMFM:
+    """Object-oriented interface to the dynamic matrix factor model."""
+
+    def __init__(
+        self,
+        R: np.ndarray,
+        C: np.ndarray,
+        F: np.ndarray,
+        dynamics: DynamicsParams | None = None,
+        idiosyncratic: IdiosyncraticParams | None = None,
+        *,
+        kronecker_only: bool = False,
+        diagonal_idiosyncratic: bool = False,
+    ) -> None:
+        self.R = R
+        self.C = C
+        self.F = F
+        self.dynamics = dynamics if dynamics is not None else DynamicsParams()
+        self.idiosyncratic = (
+            idiosyncratic if idiosyncratic is not None else IdiosyncraticParams()
+        )
+        self.kronecker_only = kronecker_only
+        self.diagonal_idiosyncratic = diagonal_idiosyncratic
+        self.loglik: list[float] = []
+        self.param_diff: list[float] = []
+        self.ll_diff: list[float] = []
+
+        self.k1 = R.shape[1]
+        self.k2 = C.shape[1]
+        self.P = len(self.dynamics.A)
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_data(
+        cls,
+        Y: np.ndarray,
+        k1: int,
+        k2: int,
+        P: int,
+        mask: np.ndarray | None = None,
+        method: str = "pe",
+        *,
+        kronecker_only: bool = False,
+        diagonal_idiosyncratic: bool = False,
+    ) -> "DMFM":
+        """Create an instance from raw data using ``initialize_dmfm``."""
+
+        params = initialize_dmfm(Y, k1, k2, P, mask=mask, method=method)
+        dynamics = DynamicsParams(
+            params["A"], params["B"], params["P"], params["Q"], params.get("Phi")
+        )
+        idio = IdiosyncraticParams(params["H"], params["K"])
+        obj = cls(
+            params["R"],
+            params["C"],
+            params["F"],
+            dynamics,
+            idio,
+            kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
+        )
+        return obj
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _construct_state_matrices(
+        A: list[np.ndarray] | None,
+        B: list[np.ndarray] | None,
+        *,
+        Phi: list[np.ndarray] | None = None,
+        kronecker_only: bool = False,
+    ) -> np.ndarray:
+        """Delegate to :func:`_construct_state_matrices` helper."""
+
+        return _construct_state_matrices(A, B, Phi=Phi, kronecker_only=kronecker_only)
+
+    # ------------------------------------------------------------------
+    def _as_params(self) -> dict:
+        return {
+            "R": self.R,
+            "C": self.C,
+            "A": self.dynamics.A,
+            "B": self.dynamics.B,
+            "Phi": self.dynamics.Phi,
+            "H": self.idiosyncratic.H,
+            "K": self.idiosyncratic.K,
+            "P": self.dynamics.P,
+            "Q": self.dynamics.Q,
+            "F": self.F,
+        }
+
+    def _update_from_params(self, params: dict) -> None:
+        self.R = params["R"]
+        self.C = params["C"]
+        self.dynamics.A = params["A"]
+        self.dynamics.B = params["B"]
+        self.dynamics.Phi = params.get("Phi")
+        self.idiosyncratic.H = params["H"]
+        self.idiosyncratic.K = params["K"]
+        self.dynamics.P = params["P"]
+        self.dynamics.Q = params["Q"]
+        self.F = params["F"]
+
+    # ------------------------------------------------------------------
+    def kalman_smoother(
+        self,
+        Y: np.ndarray,
+        mask: np.ndarray | None = None,
+        Pmat: np.ndarray | None = None,
+        Qmat: np.ndarray | None = None,
+        i1_factors: bool = False,
+        *,
+        kronecker_only: bool | None = None,
+        diagonal_idiosyncratic: bool | None = None,
+    ) -> dict:
+        """Run the Kalman smoother using the model's parameters."""
+
+        if kronecker_only is None:
+            kronecker_only = self.kronecker_only
+        if diagonal_idiosyncratic is None:
+            diagonal_idiosyncratic = self.diagonal_idiosyncratic
+        return kalman_smoother_dmfm(
+            Y,
+            self.R,
+            self.C,
+            self.dynamics.A,
+            self.dynamics.B,
+            self.idiosyncratic.H,
+            self.idiosyncratic.K,
+            mask,
+            Pmat if Pmat is not None else self.dynamics.P,
+            Qmat if Qmat is not None else self.dynamics.Q,
+            i1_factors=i1_factors,
+            Phi=self.dynamics.Phi,
+            kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
+        )
+
+    # ------------------------------------------------------------------
+    def qml_loglik(
+        self,
+        Y: np.ndarray,
+        mask: np.ndarray | None = None,
+        i1_factors: bool = False,
+        *,
+        kronecker_only: bool | None = None,
+        diagonal_idiosyncratic: bool | None = None,
+    ) -> float:
+        """Return QML log-likelihood for the current parameters."""
+
+        if kronecker_only is None:
+            kronecker_only = self.kronecker_only
+        if diagonal_idiosyncratic is None:
+            diagonal_idiosyncratic = self.diagonal_idiosyncratic
+        return qml_loglik_dmfm(
+            Y,
+            self.R,
+            self.C,
+            self.dynamics.A,
+            self.dynamics.B,
+            self.idiosyncratic.H,
+            self.idiosyncratic.K,
+            mask,
+            self.dynamics.P,
+            self.dynamics.Q,
+            i1_factors=i1_factors,
+            Phi=self.dynamics.Phi,
+            kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
+        )
+
+    # ------------------------------------------------------------------
+    def em_step(
+        self,
+        Y: np.ndarray,
+        mask: np.ndarray | None = None,
+        nonstationary: bool = False,
+        i1_factors: bool = False,
+        *,
+        kronecker_only: bool | None = None,
+        diagonal_idiosyncratic: bool | None = None,
+    ) -> tuple["DMFM", float, float]:
+        """Perform a single EM step updating the model in-place."""
+
+        if kronecker_only is None:
+            kronecker_only = self.kronecker_only
+        if diagonal_idiosyncratic is None:
+            diagonal_idiosyncratic = self.diagonal_idiosyncratic
+        new_params, diff, ll = em_step_dmfm(
+            Y,
+            self._as_params(),
+            mask,
+            nonstationary,
+            i1_factors=i1_factors,
+            kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
+        )
+        self._update_from_params(new_params)
+        self.param_diff.append(diff)
+        if self.loglik:
+            self.ll_diff.append(ll - self.loglik[-1])
+        else:
+            self.ll_diff.append(np.inf)
+        self.loglik.append(ll)
+        return self, diff, ll
+
+    # ------------------------------------------------------------------
+    def fit_em(
+        self,
+        Y: np.ndarray,
+        max_iter: int = 100,
+        tol: float = 1e-4,
+        mask: np.ndarray | None = None,
+        nonstationary: bool = False,
+        i1_factors: bool = False,
+        *,
+        kronecker_only: bool | None = None,
+        diagonal_idiosyncratic: bool | None = None,
+    ) -> "DMFM":
+        """Fit the DMFM via the EM algorithm."""
+
+        if kronecker_only is None:
+            kronecker_only = self.kronecker_only
+        if diagonal_idiosyncratic is None:
+            diagonal_idiosyncratic = self.diagonal_idiosyncratic
+        params = _run_em_iterations(
+            Y,
+            self._as_params(),
+            max_iter,
+            tol,
+            mask,
+            nonstationary,
+            i1_factors,
+            kronecker_only=kronecker_only,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
+        )
+        self._update_from_params(params)
+        self.loglik = params.get("loglik", [])
+        self.param_diff = params.get("param_diff", [])
+        self.ll_diff = params.get("ll_diff", [])
+        return self
+
+    # ------------------------------------------------------------------
+    def forecast(
+        self,
+        steps: int,
+        *,
+        F_last: np.ndarray | None = None,
+        return_factors: bool = False,
+    ):
+        """Forecast future observations."""
+
+        out = forecast_dmfm(
+            steps, self._as_params(), F_last=F_last, return_factors=return_factors
+        )
+        return out
+
+    # ------------------------------------------------------------------
+    def conditional_forecast(
+        self,
+        steps: int,
+        *,
+        known_future: dict[int, np.ndarray] | None = None,
+        mask_future: dict[int, np.ndarray] | None = None,
+    ) -> np.ndarray:
+        """Return conditional forecasts using future known values."""
+
+        return conditional_forecast_dmfm(
+            steps,
+            self._as_params(),
+            known_future=known_future,
+            mask_future=mask_future,
+        )
 
 
 def _construct_state_matrices(
