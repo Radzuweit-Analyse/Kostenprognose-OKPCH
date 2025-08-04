@@ -6,6 +6,31 @@ from typing import List, Tuple
 import KPOKPCH
 
 
+def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
+    """Return seasonal differences of ``Y`` with the given period.
+
+    Parameters
+    ----------
+    Y : ndarray
+        Data array ``(T, p1, p2)``.
+    period : int
+        Seasonal period used for differencing (e.g. ``4`` for quarterly data).
+
+    Returns
+    -------
+    ndarray
+        Array with shape ``(T - period, p1, p2)`` containing ``Y_t - Y_{t-period}``.
+    """
+
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim != 3:
+        raise ValueError("Y must be a 3D array")
+    T = Y.shape[0]
+    if period <= 0 or period >= T:
+        raise ValueError("period must be between 1 and T-1")
+    return Y[period:] - Y[:-period]
+
+
 def integrate_seasonal_diff(
     last_obs: np.ndarray, diffs: np.ndarray, period: int
 ) -> np.ndarray:
@@ -95,18 +120,24 @@ def main():
     Y = (data / scale)[:, :, None]  # (T, cantons, 1)
 
     period = 4  # quarterly seasonality
-    Y_sd = KPOKPCH.seasonal_difference(Y, period)
+    Y_sd = KPOKPCH.utils.seasonal_difference(Y, period)
     mask = ~np.isnan(Y_sd)
-    model = KPOKPCH.DMFM.from_data(Y_sd, k1=1, k2=1, P=1, mask=mask)
-    model.fit_em(
-        Y_sd,
-        max_iter=50,
-        mask=mask,
-        nonstationary=True,
-        i1_factors=True,
-    )
+    model = KPOKPCH.DMFM.DMFMModel(p1=Y_sd.shape[1], p2=Y_sd.shape[2], k1=1, k2=1, P=1)
+    model.initialize(Y_sd, mask)
+    estimator = KPOKPCH.DMFM.EMEstimatorDMFM(model)
+    estimator.fit(Y_sd, mask, max_iter=50)
+
+    dynamics = KPOKPCH.DMFM.DMFMDynamics(model.A, model.B, model.Pmat, model.Qmat)
+    if model.F is not None:
+        dynamics.estimate(model.F)
     steps = 8  # two years ahead
-    fcst_diff = model.forecast(steps)
+    F_hist = [model.F[-l] for l in range(1, model.P + 1)]
+    fcst_diff = []
+    for _ in range(steps):
+        F_next = dynamics.evolve(F_hist)
+        fcst_diff.append(model.R @ F_next @ model.C.T)
+        F_hist = [F_next] + F_hist[:-1]
+    fcst_diff = np.stack(fcst_diff, axis=0)
     fcst_levels = integrate_seasonal_diff(Y[-period:], fcst_diff, period)
     fcst = fcst_levels[:, :, 0] * scale
     future_periods = generate_future_periods(periods[-1], steps)

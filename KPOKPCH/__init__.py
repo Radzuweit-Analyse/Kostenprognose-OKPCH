@@ -2,25 +2,27 @@ __version__ = "0.0.1"
 
 from importlib import import_module
 
-__dmfm__ = [
-    "DMFM",
+__DMFM__ = [
+    "DMFMModel",
+    "DMFMDynamics",
+    "KalmanFilterDMFM",
+    "EMEstimatorDMFM",
 ]
 
-__utils__ = [
-    "seasonal_difference",
+__forecast__ = [
 ]
 
-__all__ = __dmfm__ + __utils__
+__all__ = __DMFM__ + __forecast__
 
 
 def __getattr__(name):
-    if name in __dmfm__:
-        module = import_module(".dmfm", __name__)
+    if name in __DMFM__:
+        module = import_module(".DMFM", __name__)
         attr = getattr(module, name)
         globals()[name] = attr
         return attr
-    elif name in __utils__:
-        module = import_module(".utils", __name__)
+    elif name in __forecast__:
+        module = import_module(".forecast", __name__)
         attr = getattr(module, name)
         globals()[name] = attr
         return attr
