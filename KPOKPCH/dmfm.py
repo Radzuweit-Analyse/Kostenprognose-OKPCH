@@ -8,7 +8,7 @@ and full idiosyncratic covariance structure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 from numpy.linalg import inv, svd
 from typing import Iterable, Sequence
@@ -22,21 +22,29 @@ except Exception:  # pragma: no cover - joblib not available
 
 @dataclass
 class DynamicsParams:
-    """Container for dynamic parameters of the DMFM."""
+    """Container for dynamic parameters of the DMFM.
 
-    A: list[np.ndarray]
-    B: list[np.ndarray]
-    P: np.ndarray
-    Q: np.ndarray
+    All fields are optional to allow lightweight ``DMFM`` instantiation
+    without specifying dynamics explicitly.
+    """
+
+    A: list[np.ndarray] = field(default_factory=list)
+    B: list[np.ndarray] = field(default_factory=list)
+    P: np.ndarray | None = None
+    Q: np.ndarray | None = None
     Phi: list[np.ndarray] | None = None
 
 
 @dataclass
 class IdiosyncraticParams:
-    """Container for idiosyncratic covariance matrices."""
+    """Container for idiosyncratic covariance matrices.
 
-    H: np.ndarray
-    K: np.ndarray
+    The matrices are optional so that users can instantiate ``DMFM`` with
+    only loading and factor matrices when desired.
+    """
+
+    H: np.ndarray | None = None
+    K: np.ndarray | None = None
 
 def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
     """Return seasonal differences of ``Y`` with the given period.
@@ -304,7 +312,7 @@ def _run_em_iterations(
     ll_diff_trace: list[float] = []
     last_ll = -np.inf
     for it in range(max_iter):
-        params, diff, ll = em_step_dmfm(
+        params, diff, ll = _em_step_dmfm(
             Y,
             params,
             mask,
@@ -572,7 +580,7 @@ def _e_step(
     diagonal_idiosyncratic: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     scale = 10.0 if nonstationary else 1.0
-    return_values = kalman_smoother_dmfm(
+    return_values = _kalman_smoother_dmfm(
         Y,
         params["R"],
         params["C"],
@@ -646,7 +654,7 @@ def _m_step(
     return new_params, diff
 
 
-def initialize_dmfm(
+def _initialize_dmfm(
     Y: np.ndarray,
     k1: int,
     k2: int,
@@ -760,9 +768,9 @@ class DMFM:
         kronecker_only: bool = False,
         diagonal_idiosyncratic: bool = False,
     ) -> "DMFM":
-        """Create an instance from raw data using ``initialize_dmfm``."""
+        """Create an instance from raw data using ``_initialize_dmfm``."""
 
-        params = initialize_dmfm(Y, k1, k2, P, mask=mask, method=method)
+        params = _initialize_dmfm(Y, k1, k2, P, mask=mask, method=method)
         dynamics = DynamicsParams(
             params["A"], params["B"], params["P"], params["Q"], params.get("Phi")
         )
@@ -777,6 +785,96 @@ class DMFM:
             diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         return obj
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def fit_distributed(
+        cls,
+        Y: np.ndarray,
+        B: int,
+        k1: int,
+        k2: int,
+        P: int,
+        axis: str = "row",
+        aggregation: str = "average",
+        n_jobs: int | None = None,
+        **kwargs,
+    ) -> "DMFM":
+        """Estimate the model via distributed QMLE and return an instance."""
+
+        params = _fit_dmfm_distributed(
+            Y,
+            B,
+            k1,
+            k2,
+            P,
+            axis=axis,
+            aggregation=aggregation,
+            n_jobs=n_jobs,
+            **kwargs,
+        )
+        dynamics = DynamicsParams(
+            params["A"], params["B"], params["P"], params["Q"], params.get("Phi")
+        )
+        idio = IdiosyncraticParams(params["H"], params["K"])
+        obj = cls(
+            params["R"],
+            params["C"],
+            params["F"],
+            dynamics,
+            idio,
+        )
+        obj.loglik = params.get("loglik", [])
+        return obj
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def optimize_qml(
+        cls,
+        Y: np.ndarray,
+        k1: int,
+        k2: int,
+        P: int,
+        mask: np.ndarray | None = None,
+        init_params: dict | None = None,
+        diagonal_idiosyncratic: bool = False,
+    ) -> dict:
+        """Optimize the QML objective and return raw parameter estimates."""
+
+        return _optimize_qml_dmfm(
+            Y,
+            k1,
+            k2,
+            P,
+            mask=mask,
+            init_params=init_params,
+            diagonal_idiosyncratic=diagonal_idiosyncratic,
+        )
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def select_rank(
+        cls, Y: np.ndarray, max_k: int = 10, method: str = "ratio"
+    ) -> tuple[int, int]:
+        """Suggest ``(k1, k2)`` using heuristic rules."""
+
+        return _select_dmfm_rank(Y, max_k=max_k, method=method)
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def select_qml(
+        cls,
+        Y: np.ndarray,
+        max_k: int = 5,
+        max_P: int = 2,
+        criterion: str = "bic",
+        mask: np.ndarray | None = None,
+    ) -> tuple[int, int, int]:
+        """Select ``(k1, k2, P)`` using QML information criteria."""
+
+        return _select_dmfm_qml(
+            Y, max_k=max_k, max_P=max_P, criterion=criterion, mask=mask
+        )
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -836,7 +934,7 @@ class DMFM:
             kronecker_only = self.kronecker_only
         if diagonal_idiosyncratic is None:
             diagonal_idiosyncratic = self.diagonal_idiosyncratic
-        return kalman_smoother_dmfm(
+        return _kalman_smoother_dmfm(
             Y,
             self.R,
             self.C,
@@ -869,7 +967,7 @@ class DMFM:
             kronecker_only = self.kronecker_only
         if diagonal_idiosyncratic is None:
             diagonal_idiosyncratic = self.diagonal_idiosyncratic
-        return qml_loglik_dmfm(
+        return _qml_loglik_dmfm(
             Y,
             self.R,
             self.C,
@@ -903,7 +1001,7 @@ class DMFM:
             kronecker_only = self.kronecker_only
         if diagonal_idiosyncratic is None:
             diagonal_idiosyncratic = self.diagonal_idiosyncratic
-        new_params, diff, ll = em_step_dmfm(
+        new_params, diff, ll = _em_step_dmfm(
             Y,
             self._as_params(),
             mask,
@@ -967,7 +1065,7 @@ class DMFM:
     ):
         """Forecast future observations."""
 
-        out = forecast_dmfm(
+        out = _forecast_dmfm(
             steps, self._as_params(), F_last=F_last, return_factors=return_factors
         )
         return out
@@ -982,11 +1080,27 @@ class DMFM:
     ) -> np.ndarray:
         """Return conditional forecasts using future known values."""
 
-        return conditional_forecast_dmfm(
+        return _conditional_forecast_dmfm(
             steps,
             self._as_params(),
             known_future=known_future,
             mask_future=mask_future,
+        )
+
+    # ------------------------------------------------------------------
+    def compute_standard_errors(
+        self, Y: np.ndarray, mask: np.ndarray | None = None
+    ) -> dict:
+        """Return approximate standard errors for ``R`` and ``C``."""
+
+        return _compute_standard_errors_dmfm(Y, self.R, self.C, self.F, mask)
+
+    # ------------------------------------------------------------------
+    def compute_standard_errors_dynamics(self) -> dict:
+        """Return standard errors for the dynamic matrices ``A`` and ``B``."""
+
+        return _compute_standard_errors_dynamics(
+            self.F, self.dynamics.A, self.dynamics.B
         )
 
 
@@ -1029,7 +1143,7 @@ def _construct_state_matrices(
     return Tmat
 
 
-def kalman_smoother_dmfm(
+def _kalman_smoother_dmfm(
     Y: np.ndarray,
     R: np.ndarray,
     C: np.ndarray,
@@ -1116,7 +1230,7 @@ def kalman_smoother_dmfm(
     }
 
 
-def qml_loglik_dmfm(
+def _qml_loglik_dmfm(
     Y: np.ndarray,
     R: np.ndarray,
     C: np.ndarray,
@@ -1152,7 +1266,7 @@ def qml_loglik_dmfm(
     Kalman filter.
     """
 
-    out = kalman_smoother_dmfm(
+    out = _kalman_smoother_dmfm(
         Y,
         R,
         C,
@@ -1171,7 +1285,7 @@ def qml_loglik_dmfm(
     return float(out["loglik"])
 
 
-def pack_dmfm_parameters(
+def _pack_dmfm_parameters(
     R: np.ndarray,
     C: np.ndarray,
     A: list[np.ndarray],
@@ -1190,7 +1304,7 @@ def pack_dmfm_parameters(
     return np.concatenate(parts)
 
 
-def unpack_dmfm_parameters(
+def _unpack_dmfm_parameters(
     vec: np.ndarray,
     shape_info: dict,
 ) -> tuple[
@@ -1252,7 +1366,7 @@ def unpack_dmfm_parameters(
     return R, C, A, B, H, K, Pmat, Qmat
 
 
-def qml_objective_dmfm(
+def _qml_objective_dmfm(
     params_vec: np.ndarray,
     Y: np.ndarray,
     shape_info: dict,
@@ -1264,8 +1378,8 @@ def qml_objective_dmfm(
 ) -> float:
     """Return negative QML log-likelihood for optimization."""
 
-    R, C, A, B, H, K, Pmat, Qmat = unpack_dmfm_parameters(params_vec, shape_info)
-    out = kalman_smoother_dmfm(
+    R, C, A, B, H, K, Pmat, Qmat = _unpack_dmfm_parameters(params_vec, shape_info)
+    out = _kalman_smoother_dmfm(
         Y,
         R,
         C,
@@ -1283,7 +1397,7 @@ def qml_objective_dmfm(
     return -float(out["loglik"])
 
 
-def optimize_qml_dmfm(
+def _optimize_qml_dmfm(
     Y: np.ndarray,
     k1: int,
     k2: int,
@@ -1303,11 +1417,11 @@ def optimize_qml_dmfm(
     Tn, p1, p2 = Y.shape
 
     if init_params is None:
-        init_params = initialize_dmfm(Y, k1, k2, P, mask)
+        init_params = _initialize_dmfm(Y, k1, k2, P, mask)
 
     shape_info = {"p1": p1, "k1": k1, "p2": p2, "k2": k2, "P": P}
 
-    x0 = pack_dmfm_parameters(
+    x0 = _pack_dmfm_parameters(
         init_params["R"],
         init_params["C"],
         init_params["A"],
@@ -1318,7 +1432,7 @@ def optimize_qml_dmfm(
         init_params.get("Q", np.eye(k2)),
     )
 
-    obj = lambda v: qml_objective_dmfm(
+    obj = lambda v: _qml_objective_dmfm(
         v, Y, shape_info, mask, diagonal_idiosyncratic=diagonal_idiosyncratic
     )
     if minimize is not None:
@@ -1329,8 +1443,8 @@ def optimize_qml_dmfm(
         res = None
         opt_x = x0
 
-    R, C, A, B, H, K, Pmat, Qmat = unpack_dmfm_parameters(opt_x, shape_info)
-    smooth = kalman_smoother_dmfm(
+    R, C, A, B, H, K, Pmat, Qmat = _unpack_dmfm_parameters(opt_x, shape_info)
+    smooth = _kalman_smoother_dmfm(
         Y,
         R,
         C,
@@ -1360,7 +1474,7 @@ def optimize_qml_dmfm(
     }
 
 
-def em_step_dmfm(
+def _em_step_dmfm(
     Y: np.ndarray,
     params: dict,
     mask: np.ndarray | None = None,
@@ -1375,7 +1489,7 @@ def em_step_dmfm(
     Returns updated parameters, relative change and log-likelihood.
     """
     if params.get("frozen"):
-        ll = qml_loglik_dmfm(
+        ll = _qml_loglik_dmfm(
             Y,
             params["R"],
             params["C"],
@@ -1414,7 +1528,7 @@ def em_step_dmfm(
         kronecker_only=kronecker_only,
         diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
-    smooth_new = kalman_smoother_dmfm(
+    smooth_new = _kalman_smoother_dmfm(
         Y,
         new_params["R"],
         new_params["C"],
@@ -1436,7 +1550,7 @@ def em_step_dmfm(
     return new_params, diff, ll
 
 
-def fit_dmfm_em(
+def _fit_dmfm_em(
     Y: np.ndarray,
     k1: int,
     k2: int,
@@ -1460,7 +1574,7 @@ def fit_dmfm_em(
     Returns fitted parameters and a log-likelihood trace.
     """
     if use_qml_opt:
-        res = optimize_qml_dmfm(
+        res = _optimize_qml_dmfm(
             Y,
             k1,
             k2,
@@ -1470,12 +1584,12 @@ def fit_dmfm_em(
             diagonal_idiosyncratic=diagonal_idiosyncratic,
         )
         if return_se:
-            res["standard_errors"] = compute_standard_errors_dmfm(
+            res["standard_errors"] = _compute_standard_errors_dmfm(
                 Y, res["R"], res["C"], res["F"], mask
             )
         return res
 
-    params = initialize_dmfm(Y, k1, k2, P, mask, method="pe")
+    params = _initialize_dmfm(Y, k1, k2, P, mask, method="pe")
     if nonstationary or kronecker_only:
         params["A"] = [np.eye(k1) for _ in range(P)]
         params["B"] = [np.eye(k2) for _ in range(P)]
@@ -1491,17 +1605,17 @@ def fit_dmfm_em(
         diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     if return_se:
-        params["standard_errors"] = compute_standard_errors_dmfm(
+        params["standard_errors"] = _compute_standard_errors_dmfm(
             Y, params["R"], params["C"], params["F"], mask
         )
     if return_se_dynamics:
-        params["standard_errors_dynamics"] = compute_standard_errors_dynamics(
+        params["standard_errors_dynamics"] = _compute_standard_errors_dynamics(
             params["F"], params["A"], params["B"]
         )
     if i1_factors and return_trend_decomp:
-        params["trend_decomposition"] = identify_dmfm_trends(params["F"])
+        params["trend_decomposition"] = _identify_dmfm_trends(params["F"])
     if unit_root_test is not None:
-        params["unit_root_tests"] = test_unit_root_factors(
+         params["unit_root_tests"] = _test_unit_root_factors(
             params["F"], method=unit_root_test
         )
 
@@ -1525,7 +1639,7 @@ def fit_dmfm_em(
     return params
 
 
-def compute_standard_errors_dmfm(
+def _compute_standard_errors_dmfm(
     Y: np.ndarray,
     R: np.ndarray,
     C: np.ndarray,
@@ -1620,7 +1734,7 @@ def compute_standard_errors_dmfm(
     return {"se_R": se_R, "se_C": se_C, "ci_R": ci_R, "ci_C": ci_C}
 
 
-def compute_standard_errors_dynamics(
+def _compute_standard_errors_dynamics(
     F: np.ndarray, A: Sequence[np.ndarray], B: Sequence[np.ndarray]
 ) -> dict:
     """Return standard errors for MAR dynamics.
@@ -1710,7 +1824,7 @@ def compute_standard_errors_dynamics(
     return {"se_A": se_A, "se_B": se_B}
 
 
-def identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
+def _identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
     r"""Identify common stochastic trends in the factor path.
 
     Trend Decomposition
@@ -1778,7 +1892,7 @@ def identify_dmfm_trends(F: np.ndarray, threshold: float = 0.85) -> dict:
     }
 
 
-def test_unit_root_factors(F: np.ndarray, method: str = "adf") -> dict:
+def _test_unit_root_factors(F: np.ndarray, method: str = "adf") -> dict:
     """Perform unit root tests on the latent factors.
 
     Parameters
@@ -1836,7 +1950,7 @@ def test_unit_root_factors(F: np.ndarray, method: str = "adf") -> dict:
     return results
 
 
-def select_dmfm_rank(
+def _select_dmfm_rank(
     Y: np.ndarray,
     max_k: int = 10,
     method: str = "ratio",
@@ -1910,7 +2024,7 @@ def select_dmfm_rank(
     return k1, k2
 
 
-def select_dmfm_qml(
+def _select_dmfm_qml(
     Y: np.ndarray,
     max_k: int = 5,
     max_P: int = 2,
@@ -1953,7 +2067,7 @@ def select_dmfm_qml(
         for k2 in range(1, max_k + 1):
             for P in range(1, max_P + 1):
                 try:
-                    res = fit_dmfm_em(Y, k1, k2, P, max_iter=25, mask=mask)
+                    res = _fit_dmfm_em(Y, k1, k2, P, max_iter=25, mask=mask)
                 except Exception:
                     continue
                 if not res.get("loglik"):
@@ -1980,7 +2094,7 @@ def select_dmfm_qml(
     return best_cfg
 
 
-def forecast_dmfm(
+def _forecast_dmfm(
     steps: int,
     params: dict,
     F_last: np.ndarray | None = None,
@@ -1993,7 +2107,7 @@ def forecast_dmfm(
     steps : int
         Number of steps ahead to forecast.
     params : dict
-        Parameter dictionary as returned by :func:`fit_dmfm_em`.
+        Parameter dictionary as returned by :func:`_fit_dmfm_em`.
     F_last : ndarray or None, optional
         Last ``P`` factor observations used as starting state. If ``None`` the
         last smoothed factors from ``params['F']`` are used.
@@ -2053,7 +2167,7 @@ def forecast_dmfm(
     return Y_fcst
 
 
-def conditional_forecast_dmfm(
+def _conditional_forecast_dmfm(
     steps: int,
     params: dict,
     known_future: dict[int, np.ndarray] | None = None,
@@ -2066,7 +2180,7 @@ def conditional_forecast_dmfm(
     steps : int
         Number of steps ahead to forecast.
     params : dict
-        Parameter dictionary as returned by :func:`fit_dmfm_em`.
+        Parameter dictionary as returned by :func:`_fit_dmfm_em`.
     known_future : dict[int, ndarray] or None, optional
         Mapping from step ``h`` (1-indexed) to matrices with known future
         entries. Unknown locations should be ``np.nan``.
@@ -2157,7 +2271,7 @@ def conditional_forecast_dmfm(
     return Y_fcst
 
 
-def subsample_panel(
+def _subsample_panel(
     Y: np.ndarray,
     B: int,
     axis: str = "row",
@@ -2202,7 +2316,7 @@ def subsample_panel(
     return blocks, indices
 
 
-def fit_dmfm_local_qml(
+def _fit_dmfm_local_qml(
     Y_block: np.ndarray,
     k1: int,
     k2: int,
@@ -2211,12 +2325,12 @@ def fit_dmfm_local_qml(
 ) -> dict:
     """Estimate DMFM parameters on a data block."""
 
-    res = fit_dmfm_em(Y_block, k1, k2, P, **kwargs)
+    res = _fit_dmfm_em(Y_block, k1, k2, P, **kwargs)
     res["local_loglik"] = res.get("loglik", [np.nan])[-1]
     return res
 
 
-def aggregate_dmfm_estimates(
+def _aggregate_dmfm_estimates(
     local_params: Sequence[dict],
     indices: Sequence[np.ndarray],
     *,
@@ -2305,7 +2419,7 @@ def aggregate_dmfm_estimates(
     }
 
 
-def fit_dmfm_distributed(
+def _fit_dmfm_distributed(
     Y: np.ndarray,
     B: int,
     k1: int,
@@ -2320,10 +2434,10 @@ def fit_dmfm_distributed(
 
     Y = np.asarray(Y, dtype=float)
     Tn, p1, p2 = Y.shape
-    blocks, idx_list = subsample_panel(Y, B, axis=axis)
+    blocks, idx_list = _subsample_panel(Y, B, axis=axis)
 
     def _fit(block):
-        return fit_dmfm_local_qml(block, k1, k2, P, **kwargs)
+        return _fit_dmfm_local_qml(block, k1, k2, P, **kwargs)
 
     if Parallel is not None and (n_jobs is not None and n_jobs != 1):
         locals_res = Parallel(n_jobs=n_jobs)(delayed(_fit)(b) for b in blocks)
@@ -2331,7 +2445,7 @@ def fit_dmfm_distributed(
         locals_res = [_fit(b) for b in blocks]
 
     weights = [len(idx) for idx in idx_list]
-    params = aggregate_dmfm_estimates(
+    params = _aggregate_dmfm_estimates(
         locals_res,
         idx_list,
         full_shape=(p1, p2),
@@ -2339,7 +2453,7 @@ def fit_dmfm_distributed(
         weights=weights,
     )
 
-    smooth = kalman_smoother_dmfm(
+    smooth = _kalman_smoother_dmfm(
         Y,
         params["R"],
         params["C"],
