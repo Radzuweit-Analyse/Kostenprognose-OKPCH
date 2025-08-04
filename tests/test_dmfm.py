@@ -1,10 +1,10 @@
 import numpy as np
 import os
-import pytest
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import KPOKPCH
+
 
 def generate_data(T=5, p1=3, p2=2):
     rng = np.random.default_rng(0)

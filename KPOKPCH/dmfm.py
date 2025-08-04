@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - joblib not available
     Parallel = None
     delayed = None
 
+
 @dataclass
 class DynamicsParams:
     """Container for dynamic parameters of the DMFM.
@@ -45,30 +46,6 @@ class IdiosyncraticParams:
 
     H: np.ndarray | None = None
     K: np.ndarray | None = None
-
-def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
-    """Return seasonal differences of ``Y`` with the given period.
-
-    Parameters
-    ----------
-    Y : ndarray
-        Data array ``(T, p1, p2)``.
-    period : int
-        Seasonal period used for differencing (e.g. ``4`` for quarterly data).
-
-    Returns
-    -------
-    ndarray
-        Array with shape ``(T - period, p1, p2)`` containing ``Y_t - Y_{t-period}``.
-    """
-
-    Y = np.asarray(Y, dtype=float)
-    if Y.ndim != 3:
-        raise ValueError("Y must be a 3D array")
-    T = Y.shape[0]
-    if period <= 0 or period >= T:
-        raise ValueError("period must be between 1 and T-1")
-    return Y[period:] - Y[:-period]
 
 
 def _init_rc_f(
@@ -343,7 +320,6 @@ def _run_em_iterations(
 
 def _update_row_loadings(Y, F, C, R, mask):
     Tn, p1, p2 = Y.shape
-    k1 = R.shape[1]
     R_new = np.zeros_like(R)
     for i in range(p1):
         X_stack = []
@@ -366,7 +342,6 @@ def _update_row_loadings(Y, F, C, R, mask):
 
 def _update_col_loadings(Y, F, R_new, C, mask):
     Tn, p1, p2 = Y.shape
-    k2 = C.shape[1]
     C_new = np.zeros_like(C)
     for j in range(p2):
         X_stack = []
@@ -445,18 +420,15 @@ def _update_innovations(F, Vs, Vss, A_new, B_new, Phi_new, i1_factors, kronecker
     Tn, k1, k2 = F.shape
     Pord = len(A_new)
     if i1_factors:
-        Tmat_new = np.eye(k1 * k2)
-        d = r = k1 * k2
+        r = k1 * k2
     else:
         if kronecker_only:
-            d = k1 * k2 * Pord
             r = k1 * k2
             Tmat_new = DMFM._construct_state_matrices(
                 None, None, Phi=Phi_new, kronecker_only=True
             )
         else:
             Tmat_new = DMFM._construct_state_matrices(A_new, B_new)
-            d = k1 * k2 * Pord
             r = k1 * k2
     P_new = np.zeros((k1, k1))
     Q_new = np.zeros((k2, k2))
@@ -723,6 +695,7 @@ def _initialize_dmfm(
         "F": F,
     }
 
+
 class DMFM:
     """Object-oriented interface to the dynamic matrix factor model."""
 
@@ -796,7 +769,6 @@ class DMFM:
         k2: int,
         P: int,
         axis: str = "row",
-        aggregation: str = "average",
         n_jobs: int | None = None,
         **kwargs,
     ) -> "DMFM":
@@ -809,7 +781,6 @@ class DMFM:
             k2,
             P,
             axis=axis,
-            aggregation=aggregation,
             n_jobs=n_jobs,
             **kwargs,
         )
@@ -828,9 +799,8 @@ class DMFM:
         return obj
 
     # ------------------------------------------------------------------
-    @classmethod
+    @staticmethod
     def optimize_qml(
-        cls,
         Y: np.ndarray,
         k1: int,
         k2: int,
@@ -852,18 +822,17 @@ class DMFM:
         )
 
     # ------------------------------------------------------------------
-    @classmethod
+    @staticmethod
     def select_rank(
-        cls, Y: np.ndarray, max_k: int = 10, method: str = "ratio"
+        Y: np.ndarray, max_k: int = 10, method: str = "ratio"
     ) -> tuple[int, int]:
         """Suggest ``(k1, k2)`` using heuristic rules."""
 
         return _select_dmfm_rank(Y, max_k=max_k, method=method)
 
     # ------------------------------------------------------------------
-    @classmethod
+    @staticmethod
     def select_qml(
-        cls,
         Y: np.ndarray,
         max_k: int = 5,
         max_P: int = 2,
@@ -1082,8 +1051,8 @@ class DMFM:
         return self
 
     # ------------------------------------------------------------------
+    @staticmethod
     def _forecast_dmfm(
-        self,
         steps: int,
         params: dict,
         F_last: np.ndarray | None = None,
@@ -1138,8 +1107,8 @@ class DMFM:
         return Y_fcst
 
     # ------------------------------------------------------------------
+    @staticmethod
     def _conditional_forecast_dmfm(
-        self,
         steps: int,
         params: dict,
         known_future: dict[int, np.ndarray] | None = None,
@@ -1677,95 +1646,6 @@ def _em_step_dmfm(
     return new_params, diff, ll
 
 
-def _fit_dmfm_em(
-    Y: np.ndarray,
-    k1: int,
-    k2: int,
-    P: int,
-    max_iter: int = 100,
-    tol: float = 1e-4,
-    mask: np.ndarray | None = None,
-    nonstationary: bool = False,
-    i1_factors: bool = False,
-    return_se: bool = False,
-    return_se_dynamics: bool = False,
-    use_qml_opt: bool = False,
-    return_trend_decomp: bool = False,
-    unit_root_test: str | None = None,
-    *,
-    kronecker_only: bool = False,
-    diagonal_idiosyncratic: bool = False,
-) -> dict:
-    r"""Fit a dynamic matrix factor model using the EM algorithm.
-
-    Returns fitted parameters and a log-likelihood trace.
-    """
-    if use_qml_opt:
-        res = _optimize_qml_dmfm(
-            Y,
-            k1,
-            k2,
-            P,
-            mask=mask,
-            init_params=None,
-            diagonal_idiosyncratic=diagonal_idiosyncratic,
-        )
-        if return_se:
-            res["standard_errors"] = _compute_standard_errors_dmfm(
-                Y, res["R"], res["C"], res["F"], mask
-            )
-        return res
-
-    params = _initialize_dmfm(Y, k1, k2, P, mask, method="pe")
-    if nonstationary or kronecker_only:
-        params["A"] = [np.eye(k1) for _ in range(P)]
-        params["B"] = [np.eye(k2) for _ in range(P)]
-    params = _run_em_iterations(
-        Y,
-        params,
-        max_iter,
-        tol,
-        mask,
-        nonstationary,
-        i1_factors,
-        kronecker_only=kronecker_only,
-        diagonal_idiosyncratic=diagonal_idiosyncratic,
-    )
-    if return_se:
-        params["standard_errors"] = _compute_standard_errors_dmfm(
-            Y, params["R"], params["C"], params["F"], mask
-        )
-    if return_se_dynamics:
-        params["standard_errors_dynamics"] = _compute_standard_errors_dynamics(
-            params["F"], params["A"], params["B"]
-        )
-    if i1_factors and return_trend_decomp:
-        params["trend_decomposition"] = _identify_dmfm_trends(params["F"])
-    if unit_root_test is not None:
-         params["unit_root_tests"] = _test_unit_root_factors(
-            params["F"], method=unit_root_test
-        )
-
-    # information criteria and parameter count
-    Tn, p1, p2 = Y.shape
-    n_params = (
-        p1 * k1
-        + p2 * k2
-        + P * (k1**2 + k2**2)
-        + (p1 * (p1 + 1) // 2 if not diagonal_idiosyncratic else p1)
-        + (p2 * (p2 + 1) // 2 if not diagonal_idiosyncratic else p2)
-        + k1 * (k1 + 1) // 2
-        + k2 * (k2 + 1) // 2
-    )
-    n_params = int(n_params)
-    final_ll = params.get("loglik", [np.nan])[-1]
-    params["n_params"] = n_params
-    params["aic"] = -2.0 * final_ll + 2.0 * n_params
-    params["bic"] = -2.0 * final_ll + np.log(Tn * p1 * p2) * n_params
-    params["lag_order"] = P
-    return params
-
-
 def _compute_standard_errors_dmfm(
     Y: np.ndarray,
     R: np.ndarray,
@@ -2194,12 +2074,13 @@ def _select_dmfm_qml(
         for k2 in range(1, max_k + 1):
             for P in range(1, max_P + 1):
                 try:
-                    res = _fit_dmfm_em(Y, k1, k2, P, max_iter=25, mask=mask)
+                    model = DMFM.from_data(Y, k1, k2, P, mask=mask)
+                    model.fit_em(Y, max_iter=25, mask=mask)
                 except Exception:
                     continue
-                if not res.get("loglik"):
+                if not model.loglik:
                     continue
-                loglik = res["loglik"][-1]
+                loglik = model.loglik[-1]
                 n_params = (
                     p1 * k1
                     + p2 * k2
@@ -2275,8 +2156,12 @@ def _fit_dmfm_local_qml(
 ) -> dict:
     """Estimate DMFM parameters on a data block."""
 
-    res = _fit_dmfm_em(Y_block, k1, k2, P, **kwargs)
-    res["local_loglik"] = res.get("loglik", [np.nan])[-1]
+    mask = kwargs.pop("mask", None)
+    model = DMFM.from_data(Y_block, k1, k2, P, mask=mask)
+    model.fit_em(Y_block, mask=mask, **kwargs)
+    res = model._as_params()
+    res["loglik"] = model.loglik
+    res["local_loglik"] = model.loglik[-1] if model.loglik else np.nan
     return res
 
 
@@ -2376,7 +2261,6 @@ def _fit_dmfm_distributed(
     k2: int,
     P: int,
     axis: str = "row",
-    aggregation: str = "average",
     n_jobs: int | None = None,
     **kwargs,
 ) -> dict:
