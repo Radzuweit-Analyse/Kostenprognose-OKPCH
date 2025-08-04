@@ -10,6 +10,10 @@ __DMFM__ = [
 ]
 
 __forecast__ = [
+    "seasonal_difference",
+    "integrate_seasonal_diff",
+    "forecast_dmfm",
+    "out_of_sample_rmse",
 ]
 
 __all__ = __DMFM__ + __forecast__

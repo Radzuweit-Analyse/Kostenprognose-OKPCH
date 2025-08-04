@@ -3,9 +3,9 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from DMFM import DMFMModel, EMEstimatorDMFM
+from KPOKPCH import DMFMModel, EMEstimatorDMFM
 
 
 def generate_data(T=8, p1=4, p2=3, k1=2, k2=2):
