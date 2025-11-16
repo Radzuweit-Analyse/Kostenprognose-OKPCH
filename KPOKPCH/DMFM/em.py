@@ -36,10 +36,10 @@ class EMEstimatorDMFM:
         r = k1 * k2
         T = Y.shape[0]
 
-        kf = KalmanFilterDMFM(self.model)
         last_ll = -np.inf
 
         for it in range(max_iter):
+            kf = KalmanFilterDMFM(self.model)
             # ---------- E-STEP ----------
             xp, Pp, xf, Pf = kf.filter(Y, mask)
             xs, Vs, Vss = kf.smooth(xp, Pp, xf, Pf)
@@ -96,19 +96,43 @@ class EMEstimatorDMFM:
                 "Q": Q_new,
             }
 
-            # ---------- Convergence ----------
-            ll = kf.log_likelihood(Y, mask, xs, Vs)
+            prev_params = {
+                "R": self.model.R,
+                "C": self.model.C,
+                "A": self.model.A,
+                "B": self.model.B,
+                "Phi": getattr(self.model, "Phi", None),
+                "H": self.model.H,
+                "K": self.model.K,
+                "P": self.model.Pmat,
+                "Q": self.model.Qmat,
+            }
+
+            # Update model parameters for the next EM iteration and downstream use
+            self._update_model(new_params, F)
+
+            # Evaluate log-likelihood under the updated parameters
+            kf_eval = KalmanFilterDMFM(self.model)
+            xp_eval, Pp_eval, xf_eval, Pf_eval = kf_eval.filter(Y, mask)
+            xs_eval, Vs_eval, _ = kf_eval.smooth(xp_eval, Pp_eval, xf_eval, Pf_eval)
+            self.model.F = xs_eval[:, :r].reshape(T, k1, k2)
+            ll = kf_eval.log_likelihood(Y, mask, xs_eval, Vs_eval)
 
             diff = _compute_param_diff(
-                self.model.__dict__, new_params, Pord, self.model.dynamics is not None and self.model.dynamics.kronecker_only
+                prev_params, new_params, Pord, self.model.dynamics is not None and self.model.dynamics.kronecker_only
             )
-
-            self.loglik_trace.append(ll)
-            self.diff_trace.append(diff)
 
             if it > 0 and (ll - last_ll) < -1e-6:
                 print(f"⚠️  Warning: Log-likelihood decreased at iteration {it}")
+                self._update_model(prev_params, self.model.F if self.model.F is not None else F)
+                ll = last_ll
+                diff = 0.0
+                self.loglik_trace.append(ll)
+                self.diff_trace.append(diff)
                 break
+            
+            self.loglik_trace.append(ll)
+            self.diff_trace.append(diff)
 
             if diff < tol:
                 break
@@ -128,6 +152,36 @@ class EMEstimatorDMFM:
         """Return the log-likelihood values across EM iterations."""
         return self.loglik_trace
 
+    # ------------------------------------------------------------------
+    def _update_model(self, new_params: dict, F: np.ndarray) -> None:
+        """Write updated parameters back to the underlying model."""
+
+        dyn_flags = {
+            "nonstationary": None,
+            "kronecker_only": None,
+            "i1_factors": None,
+        }
+        if self.model.dynamics is not None:
+            dyn_flags["nonstationary"] = self.model.dynamics.nonstationary
+            dyn_flags["kronecker_only"] = self.model.dynamics.kronecker_only
+            dyn_flags["i1_factors"] = self.model.dynamics.i1_factors
+
+        self.model.R = new_params["R"]
+        self.model.C = new_params["C"]
+        self.model.A = new_params["A"]
+        self.model.B = new_params["B"]
+        self.model.Pmat = new_params["P"]
+        self.model.Qmat = new_params["Q"]
+        self.model.H = new_params["H"]
+        self.model.K = new_params["K"]
+        self.model.F = F
+
+        self.model.dynamics = DMFMDynamics(
+            self.model.A, self.model.B, self.model.Pmat, self.model.Qmat
+        )
+        self.model.dynamics.nonstationary = dyn_flags["nonstationary"]
+        self.model.dynamics.kronecker_only = dyn_flags["kronecker_only"]
+        self.model.dynamics.i1_factors = dyn_flags["i1_factors"]
 
 # ----------------------------------------------------------------------
 # Helper routines copied from original implementation
