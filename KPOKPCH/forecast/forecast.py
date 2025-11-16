@@ -35,26 +35,19 @@ def integrate_seasonal_diff(last_obs: np.ndarray, diffs: np.ndarray, period: int
 
 
 # ---------------------------------------------------------------------------
-def load_cost_matrix(path: str) -> Tuple[List[str], List[str], List[str], np.ndarray]:
-    """Load canton cost tensor from CSV produced by ``prepare-MOKKE-data.py``.
+def load_cost_matrix(path: str) -> Tuple[List[str], List[str], np.ndarray] | Tuple[
+    List[str], List[str], List[str], np.ndarray
+]:
+    """Load canton cost data from CSV.
 
-    The CSV is expected to have ``Periode`` as the first column and flattened
-    headers of the form ``<Canton>|<Groupe_de_couts>`` for each remaining
-    column. Values are arranged into a 3D array with shape
-    ``(T, num_cantons, num_groups)``.
+    The function supports two layouts:
 
-    Parameters
-    ----------
-    path:
-        Path to the CSV file containing period identifiers in the first column
-        followed by cantonal cost values.
-
-    Returns
-    -------
-    periods, cantons, groups, data:
-        ``periods`` contains the period labels, ``cantons`` the canton names,
-        ``groups`` the cost group labels and ``data`` the numeric values as a
-        ``float`` array with shape ``(T, num_cantons, num_groups)``.
+    * Wide 2D format with ``Period`` followed by one column per canton.
+      Returns ``(periods, cantons, data)`` where ``data`` has shape
+      ``(T, num_cantons)``.
+    * Tensor format with headers of the form ``<Canton>|<Group>`` for each
+      cost group. Returns ``(periods, cantons, groups, data)`` where ``data``
+      has shape ``(T, num_cantons, num_groups)``.
     """
 
     periods: List[str] = []
@@ -63,22 +56,24 @@ def load_cost_matrix(path: str) -> Tuple[List[str], List[str], List[str], np.nda
         reader = csv.reader(f)
         header = next(reader)
         raw_columns = header[1:]
-        canton_group_pairs: List[Tuple[str, str]] = []
-        for col in raw_columns:
-            if "|" not in col:
-                raise ValueError(
-                    "Expected column headers in the form '<Canton>|<Group>'"
-                )
-            canton, group = col.split("|", maxsplit=1)
-            canton_group_pairs.append((canton, group))
+        has_groups = all("|" in col for col in raw_columns)
+        if has_groups:
+            canton_group_pairs: List[Tuple[str, str]] = []
+            for col in raw_columns:
+                canton, group = col.split("|", maxsplit=1)
+                canton_group_pairs.append((canton, group))
 
-        cantons: List[str] = []
-        groups: List[str] = []
-        for canton, group in canton_group_pairs:
-            if canton not in cantons:
-                cantons.append(canton)
-            if group not in groups:
-                groups.append(group)
+            cantons: List[str] = []
+            groups: List[str] = []
+            for canton, group in canton_group_pairs:
+                if canton not in cantons:
+                    cantons.append(canton)
+                if group not in groups:
+                    groups.append(group)
+        else:
+            canton_group_pairs = [(canton, "") for canton in raw_columns]
+            cantons = list(raw_columns)
+            groups = [""]
         
         for row in reader:
             periods.append(row[0])
@@ -90,13 +85,17 @@ def load_cost_matrix(path: str) -> Tuple[List[str], List[str], List[str], np.nda
                     values.append(np.nan)
             data_rows.append(values)
     flat = np.array(data_rows, dtype=float)
-    data = np.full((len(periods), len(cantons), len(groups)), np.nan, dtype=float)
-    canton_idx = {c: i for i, c in enumerate(cantons)}
-    group_idx = {g: j for j, g in enumerate(groups)}
-    for col, (canton, group) in enumerate(canton_group_pairs):
-        data[:, canton_idx[canton], group_idx[group]] = flat[:, col]
+    
+    if has_groups:
+        data = np.full((len(periods), len(cantons), len(groups)), np.nan, dtype=float)
+        canton_idx = {c: i for i, c in enumerate(cantons)}
+        group_idx = {g: j for j, g in enumerate(groups)}
+        for col, (canton, group) in enumerate(canton_group_pairs):
+            data[:, canton_idx[canton], group_idx[group]] = flat[:, col]
+        return periods, cantons, groups, data
 
-    return periods, cantons, groups, data
+    data = flat
+    return periods, cantons, data
 
 
 # ---------------------------------------------------------------------------

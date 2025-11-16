@@ -7,7 +7,13 @@ from KPOKPCH import *
 
 def main():
     csv_path = Path(__file__).resolve().parent / "health_costs_tensor.csv"
-    periods, cantons, groups, data = load_cost_matrix(str(csv_path))
+    loaded = load_cost_matrix(str(csv_path))
+    if len(loaded) == 4:
+        periods, cantons, groups, data = loaded
+    else:
+        periods, cantons, data = loaded
+        groups = ["Total"]
+        data = data[:, :, None] if data.ndim == 2 else data
     scale = 1000.0
     Y = data / scale  # (T, cantons, groups)
 
