@@ -35,8 +35,13 @@ def integrate_seasonal_diff(last_obs: np.ndarray, diffs: np.ndarray, period: int
 
 
 # ---------------------------------------------------------------------------
-def load_cost_matrix(path: str) -> Tuple[List[str], List[str], np.ndarray]:
-    """Load canton cost matrix from CSV produced by ``prepare-MOKKE-data.py``.
+def load_cost_matrix(path: str) -> Tuple[List[str], List[str], List[str], np.ndarray]:
+    """Load canton cost tensor from CSV produced by ``prepare-MOKKE-data.py``.
+
+    The CSV is expected to have ``Periode`` as the first column and flattened
+    headers of the form ``<Canton>|<Groupe_de_couts>`` for each remaining
+    column. Values are arranged into a 3D array with shape
+    ``(T, num_cantons, num_groups)``.
 
     Parameters
     ----------
@@ -46,10 +51,10 @@ def load_cost_matrix(path: str) -> Tuple[List[str], List[str], np.ndarray]:
 
     Returns
     -------
-    periods, cantons, data:
-        ``periods`` contains the period labels, ``cantons`` the canton names
-        from the header row, and ``data`` the numeric values as a ``float``
-        array with shape ``(T, num_cantons)``.
+    periods, cantons, groups, data:
+        ``periods`` contains the period labels, ``cantons`` the canton names,
+        ``groups`` the cost group labels and ``data`` the numeric values as a
+        ``float`` array with shape ``(T, num_cantons, num_groups)``.
     """
 
     periods: List[str] = []
@@ -57,7 +62,24 @@ def load_cost_matrix(path: str) -> Tuple[List[str], List[str], np.ndarray]:
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         header = next(reader)
-        cantons = header[1:]
+        raw_columns = header[1:]
+        canton_group_pairs: List[Tuple[str, str]] = []
+        for col in raw_columns:
+            if "|" not in col:
+                raise ValueError(
+                    "Expected column headers in the form '<Canton>|<Group>'"
+                )
+            canton, group = col.split("|", maxsplit=1)
+            canton_group_pairs.append((canton, group))
+
+        cantons: List[str] = []
+        groups: List[str] = []
+        for canton, group in canton_group_pairs:
+            if canton not in cantons:
+                cantons.append(canton)
+            if group not in groups:
+                groups.append(group)
+        
         for row in reader:
             periods.append(row[0])
             values = []
@@ -67,8 +89,14 @@ def load_cost_matrix(path: str) -> Tuple[List[str], List[str], np.ndarray]:
                 except ValueError:
                     values.append(np.nan)
             data_rows.append(values)
-    data = np.array(data_rows, dtype=float)
-    return periods, cantons, data
+    flat = np.array(data_rows, dtype=float)
+    data = np.full((len(periods), len(cantons), len(groups)), np.nan, dtype=float)
+    canton_idx = {c: i for i, c in enumerate(cantons)}
+    group_idx = {g: j for j, g in enumerate(groups)}
+    for col, (canton, group) in enumerate(canton_group_pairs):
+        data[:, canton_idx[canton], group_idx[group]] = flat[:, col]
+
+    return periods, cantons, groups, data
 
 
 # ---------------------------------------------------------------------------

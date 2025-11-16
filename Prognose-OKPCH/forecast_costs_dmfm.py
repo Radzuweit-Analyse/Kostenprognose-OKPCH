@@ -1,16 +1,15 @@
-import csv
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import List, Tuple
+from pathlib import Path
 
 from KPOKPCH import *
 
 
 def main():
-    csv_path = "C:/Dev/KOSTENPROGNOSE-OKPCH/Prognose-OKPCH/health_costs_matrix.csv"
-    periods, cantons, data = load_cost_matrix(csv_path)
+    csv_path = Path(__file__).resolve().parent / "health_costs_tensor.csv"
+    periods, cantons, groups, data = load_cost_matrix(str(csv_path))
     scale = 1000.0
-    Y = (data / scale)[:, :, None]  # (T, cantons, 1)
+    Y = data / scale  # (T, cantons, groups)
 
     period = 4  # quarterly seasonality
     Y_sd = seasonal_difference(Y, period)
@@ -32,8 +31,15 @@ def main():
         F_hist = [F_next] + F_hist[:-1]
     fcst_diff = np.stack(fcst_diff, axis=0)
     fcst_levels = integrate_seasonal_diff(Y[-period:], fcst_diff, period)
-    fcst = fcst_levels[:, :, 0] * scale
+    fcst = fcst_levels * scale
     future_periods = generate_future_periods(periods[-1], steps)
+
+    try:
+        total_idx = groups.index("Total")
+    except ValueError:
+        raise ValueError("'Total' cost group is required in the prepared data")
+    data_total = data[:, :, total_idx]
+    fcst_total = fcst[:, :, total_idx]
 
     # Compute yearly totals from historical and forecast data. If the last
     # historical year is incomplete, use its available quarters together with
@@ -45,19 +51,19 @@ def main():
     last_period = periods[-1]
     last_year = last_period[:4]
     last_quarter = int(last_period[-1])
-    for period, row in zip(periods, data):
+    for period, row in zip(periods, data_total):
         year = period[:4]
         if year == last_year and int(period[-1]) <= last_quarter:
-            yearly_totals.setdefault(year, np.zeros(data.shape[1]))
+            yearly_totals.setdefault(year, np.zeros(data_total.shape[1]))
             quarter_counts[year] = quarter_counts.get(year, 0) + 1
             yearly_totals[year] += np.nan_to_num(row)
 
     # Accumulate the forecast quarters
     for i, period in enumerate(future_periods):
         year = period[:4]
-        yearly_totals.setdefault(year, np.zeros(fcst.shape[1]))
+        yearly_totals.setdefault(year, np.zeros(fcst_total.shape[1]))
         quarter_counts[year] = quarter_counts.get(year, 0) + 1
-        yearly_totals[year] += np.nan_to_num(fcst[i])
+        yearly_totals[year] += np.nan_to_num(fcst_total[i])
 
     # Only display years where all four quarters are available from
     # historical + forecast data.
@@ -72,7 +78,7 @@ def main():
 
     # Plot historical data with forecasts appended
     combined_periods = periods + future_periods
-    combined_data = np.vstack([data, fcst])
+    combined_data = np.vstack([data_total, fcst_total])
 
     if "CH" in cantons:
         idx = cantons.index("CH")
