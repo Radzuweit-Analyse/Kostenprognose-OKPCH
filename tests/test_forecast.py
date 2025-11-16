@@ -10,6 +10,10 @@ from KPOKPCH.forecast import (
     integrate_seasonal_diff,
     forecast_dmfm,
     out_of_sample_rmse,
+    load_cost_matrix,
+    generate_future_periods,
+    compute_q4_growth,
+    canton_forecast,
 )
 
 
@@ -46,3 +50,37 @@ def test_out_of_sample_rmse_small():
     Y, mask = generate_data(T=12)
     rmse = out_of_sample_rmse(Y, 2, mask=mask)
     assert rmse < 0.5
+
+
+def test_load_cost_matrix(tmp_path):
+    csv_path = tmp_path / "costs.csv"
+    csv_path.write_text("Period,ZH,BE\n2020Q1,1.0,2.0\n2020Q2,3.0,\n")
+    periods, cantons, data = load_cost_matrix(str(csv_path))
+    assert periods == ["2020Q1", "2020Q2"]
+    assert cantons == ["ZH", "BE"]
+    np.testing.assert_allclose(data, [[1.0, 2.0], [3.0, np.nan]])
+
+
+def test_generate_future_periods_rollover():
+    periods = generate_future_periods("2020Q4", 3)
+    assert periods == ["2021Q1", "2021Q2", "2021Q3"]
+
+
+def test_compute_q4_growth():
+    periods = ["2020Q3", "2020Q4"]
+    data = np.array([[1.0, 2.0], [2.0, 4.0]])
+    fcst = np.array([[3.0, 6.0], [4.5, 9.0]])
+    future_periods = ["2021Q4", "2022Q4"]
+    stats = compute_q4_growth(periods, data, fcst, future_periods)
+    np.testing.assert_allclose(stats["growth_y1"], [50.0, 50.0])
+    np.testing.assert_allclose(stats["growth_y2"], [50.0, 50.0])
+
+
+def test_canton_forecast_separate_and_joint_consistent():
+    Y = np.ones((8, 3))
+    mask = np.ones_like(Y, dtype=bool)
+    fcst_joint, total_joint = canton_forecast(Y, 2, mask=mask[..., None], separate_cantons=False)
+    fcst_sep, total_sep = canton_forecast(Y, 2, mask=mask[..., None], separate_cantons=True)
+    assert fcst_joint.shape == (2, 3)
+    np.testing.assert_allclose(total_sep, fcst_sep.sum(axis=1))
+    np.testing.assert_allclose(total_joint, fcst_joint.sum(axis=1))
