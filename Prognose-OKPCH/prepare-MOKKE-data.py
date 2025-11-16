@@ -12,14 +12,8 @@ def main() -> None:
     df["Prestations_brutes_par_assure"] = df["Prestations_brutes_par_assure"].astype(float)
 
     # Compute totals directly from the sum of all detailed Groupe_de_couts
-    detail_rows = df[df["Groupe_de_couts"] != "Total"]
-    totals = (
-        detail_rows.groupby(["Periode", "Canton_ISO2"], as_index=False)[
-            "Prestations_brutes_par_assure"
-        ]
-        .sum()
-        .assign(Groupe_de_couts="Total")
-    )
+    detail_rows = df[~df["Groupe_de_couts"].isin(["Total", "Médicaments (médecin, pharmacie)"])]
+    totals = df[df["Groupe_de_couts"] == "Total"]
 
     df_full = pd.concat([detail_rows, totals], ignore_index=True)
     # Pivot into a 3D tensor stored in a flat CSV: Periode index, columns are
