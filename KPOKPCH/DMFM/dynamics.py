@@ -13,6 +13,9 @@ class DMFMDynamics:
         self.B = B
         self.Pmat = Pmat
         self.Qmat = Qmat
+        self.nonstationary = None
+        self.kronecker_only = None
+        self.i1_factors = None
 
     # ------------------------------------------------------------------
     def evolve(self, F_history: list[np.ndarray]) -> np.ndarray:

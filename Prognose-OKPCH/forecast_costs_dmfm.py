@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from typing import List, Tuple
 
-import KPOKPCH
+from KPOKPCH import *
 
 
 def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
@@ -120,14 +120,14 @@ def main():
     Y = (data / scale)[:, :, None]  # (T, cantons, 1)
 
     period = 4  # quarterly seasonality
-    Y_sd = KPOKPCH.utils.seasonal_difference(Y, period)
+    Y_sd = seasonal_difference(Y, period)
     mask = ~np.isnan(Y_sd)
-    model = KPOKPCH.DMFM.DMFMModel(p1=Y_sd.shape[1], p2=Y_sd.shape[2], k1=1, k2=1, P=1)
+    model = DMFMModel(p1=Y_sd.shape[1], p2=Y_sd.shape[2], k1=1, k2=1, P=1)
     model.initialize(Y_sd, mask)
-    estimator = KPOKPCH.DMFM.EMEstimatorDMFM(model)
+    estimator = EMEstimatorDMFM(model)
     estimator.fit(Y_sd, mask, max_iter=50)
 
-    dynamics = KPOKPCH.DMFM.DMFMDynamics(model.A, model.B, model.Pmat, model.Qmat)
+    dynamics = DMFMDynamics(model.A, model.B, model.Pmat, model.Qmat)
     if model.F is not None:
         dynamics.estimate(model.F)
     steps = 8  # two years ahead

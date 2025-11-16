@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import numpy as np
 
+from .dynamics import DMFMDynamics
 from . import utils
 
 
@@ -42,6 +43,7 @@ class DMFMModel:
     Pmat: np.ndarray | None = None
     Qmat: np.ndarray | None = None
     F: np.ndarray | None = None
+    dynamics: DMFMDynamics | None = None
 
     def initialize(
         self, Y: np.ndarray, mask: np.ndarray | None = None, method: str = "svd"
@@ -66,3 +68,5 @@ class DMFMModel:
         self.B = B
         self.Pmat = Pmat
         self.Qmat = Qmat
+
+        self.dynamics = DMFMDynamics(A, B, Pmat, Qmat)
