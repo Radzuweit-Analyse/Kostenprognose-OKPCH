@@ -1,5 +1,5 @@
-black>=25.1.0
-matplotlib>=3.10.0
-numpy>=2.3.0
-pandas>=2.3.0
-scipy>=1.16.0
+black>=26.1.0
+matplotlib>=3.10.8
+numpy>=2.4.1
+pandas>=3.0.0
+scipy>=1.17.0

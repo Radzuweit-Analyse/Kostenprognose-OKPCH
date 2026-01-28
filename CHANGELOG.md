@@ -1,4 +1,4 @@
 # Changelog
 
-## [0.0.1] - 2025-11-16
-- Initial release of the Python package.
+## [0.0.1] - Initial Public Release
+- Initial public release of the Python package.

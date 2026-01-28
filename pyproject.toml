@@ -10,7 +10,7 @@ description = "Dynamic Matrix Factor Model utilities"
 readme = "README.md"
 authors = [{name = "OKP Team"}]
 license = {file = "LICENSE"}
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 
 [project.optional-dependencies]
 publish = ["twine"]
@@ -19,7 +19,7 @@ publish = ["twine"]
 dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
-packages = ["KPOKPCH"]
+packages = ["KPOKPCH.DMFM", "KPOKPCH.forecast"]
 
 [tool.black]
 line-length = 88
