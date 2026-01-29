@@ -60,5 +60,3 @@ htmlcov/
 # Output files
 *.pdf
 *.png
-forecast_plot.pdf
-ch_total_yearly_forecast.csv
