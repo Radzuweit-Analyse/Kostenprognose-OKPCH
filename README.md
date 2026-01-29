@@ -5,6 +5,9 @@ The directory `KPOKPCH/` contains a small Python module implementing a Dynamic M
 ## TODO: Cen and Lam missing data imputation
 Missing data imputation for tensors, in particular for the factors. Can be useful when we can't wait for all data to be published at the end of a quarter, ...
 
+## TODO: (in consideration) Barigozzi and Hallin prediction intervals
+Add prediction intervals following Barigozzi and Hallin 2019.
+
 ## License
 
 This project is licensed under a proprietary license. See the [LICENSE](LICENSE) file for details.

@@ -18,7 +18,9 @@ VERBOSE = False
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Forecast Swiss health costs using DMFM")
+    parser = argparse.ArgumentParser(
+        description="Forecast Swiss health costs using DMFM"
+    )
     parser.add_argument(
         "--select-rank",
         action="store_true",
@@ -139,7 +141,9 @@ def main():
         print_selection_summary(selection_result)
 
         k1, k2 = selection_result.best_k1, selection_result.best_k2
-        print(f"\n   Selected: k1={k1}, k2={k2} (BIC={selection_result.best_value:.2f})")
+        print(
+            f"\n   Selected: k1={k1}, k2={k2} (BIC={selection_result.best_value:.2f})"
+        )
     else:
         k1, k2 = args.k1, args.k2
         print(f"   Using fixed rank: k1={k1}, k2={k2}")
