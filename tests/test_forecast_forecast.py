@@ -275,7 +275,7 @@ class TestForecastDMFM:
     @pytest.fixture
     def forecast_data(self, rng, small_dims):
         """Generate data for forecasting tests."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         return generate_dmfm_data(
             T=small_dims["T"],

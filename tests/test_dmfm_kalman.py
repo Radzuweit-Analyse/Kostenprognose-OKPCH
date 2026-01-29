@@ -340,7 +340,7 @@ class TestKalmanFilterLogLikelihood:
 
     def test_loglik_increases_with_better_fit(self, rng, small_dims):
         """Test that log-likelihood is higher for better-fitting models."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         # Generate data from known model
         data = generate_dmfm_data(

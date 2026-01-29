@@ -97,7 +97,7 @@ class TestCountParameters:
 
     def test_count_increases_with_factors(self, rng, small_dims):
         """Test that more factors means more parameters."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         data = generate_dmfm_data(
             T=small_dims["T"],
@@ -167,7 +167,7 @@ class TestComputeInformationCriteria:
     @pytest.fixture
     def fitted_model(self, rng, small_dims):
         """Create a fitted model for testing."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         data = generate_dmfm_data(
             T=small_dims["T"],
@@ -247,7 +247,7 @@ class TestSelectRank:
     @pytest.fixture
     def selection_data(self, rng, small_dims):
         """Generate data for rank selection tests."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         return generate_dmfm_data(
             T=small_dims["T"],
@@ -420,7 +420,7 @@ class TestPrintSelectionSummary:
 
     def test_prints_without_error(self, rng, small_dims, capsys):
         """Test that print_selection_summary runs without error."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         data = generate_dmfm_data(
             T=small_dims["T"],
@@ -458,7 +458,7 @@ class TestFitDMFM:
 
     def test_returns_model_and_result(self, rng, small_dims):
         """Test that fit_dmfm returns model and result."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         data = generate_dmfm_data(
             T=small_dims["T"],
@@ -483,7 +483,7 @@ class TestFitDMFM:
 
     def test_respects_parameters(self, rng, small_dims):
         """Test that fit_dmfm respects all parameters."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         data = generate_dmfm_data(
             T=small_dims["T"],
@@ -510,7 +510,7 @@ class TestFitDMFM:
 
     def test_i1_factors(self, rng, small_dims):
         """Test fitting with i1_factors=True."""
-        from tests.conftest import generate_i1_data
+        from conftest import generate_i1_data
 
         data = generate_i1_data(
             T=small_dims["T"],

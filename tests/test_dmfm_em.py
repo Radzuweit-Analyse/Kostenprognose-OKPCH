@@ -183,7 +183,7 @@ class TestEMEstimatorFitting:
 
     def test_loglik_generally_increases(self, rng, small_dims):
         """Test that log-likelihood generally increases or stays stable."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         # Generate data with reasonable signal
         data = generate_dmfm_data(
@@ -225,7 +225,7 @@ class TestEMEstimatorConvergence:
 
     def test_converges_within_max_iter(self, rng, small_dims):
         """Test that EM can converge within max iterations."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         data = generate_dmfm_data(
             T=30,  # More data for better convergence
@@ -264,7 +264,7 @@ class TestEMEstimatorConvergence:
 
     def test_respects_tolerance(self, rng, small_dims):
         """Test that EM stops when tolerance is reached."""
-        from tests.conftest import generate_dmfm_data
+        from conftest import generate_dmfm_data
 
         data = generate_dmfm_data(
             T=20,
@@ -449,7 +449,7 @@ class TestEMWithI1Factors:
 
     def test_fit_i1_factors(self, rng, small_dims):
         """Test fitting with i1_factors=True."""
-        from tests.conftest import generate_i1_data
+        from conftest import generate_i1_data
 
         data = generate_i1_data(
             T=small_dims["T"],
