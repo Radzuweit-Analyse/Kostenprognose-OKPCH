@@ -67,15 +67,6 @@ class TestDynamicsConfig:
         config = DynamicsConfig(regularization=0)
         assert config.regularization == 0
 
-    def test_nonstationary_alias(self):
-        """Test that nonstationary is an alias for i1_factors."""
-        config = DynamicsConfig(i1_factors=True)
-        assert config.nonstationary is True
-
-        config.nonstationary = False
-        assert config.i1_factors is False
-        assert config.nonstationary is False
-
 
 # ---------------------------------------------------------------------------
 # DMFMDynamics creation tests
@@ -226,14 +217,6 @@ class TestDMFMDynamicsProperties:
         dynamics.i1_factors = True
         assert dynamics.i1_factors is True
         assert dynamics.config.i1_factors is True
-
-    def test_nonstationary_alias(self, dynamics):
-        """Test nonstationary as alias for i1_factors."""
-        assert dynamics.nonstationary is False
-
-        dynamics.nonstationary = True
-        assert dynamics.nonstationary is True
-        assert dynamics.i1_factors is True
 
     def test_kronecker_only_property(self, dynamics):
         """Test kronecker_only property getter and setter."""

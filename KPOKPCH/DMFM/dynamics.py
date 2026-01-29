@@ -27,11 +27,6 @@ class DynamicsConfig:
         - No drift is estimated
         - Kalman filter uses diffuse initial state
         - Estimation is done in levels (no differencing needed)
-
-    Notes
-    -----
-    The `nonstationary` attribute is kept as an alias for `i1_factors`
-    for backward compatibility but `i1_factors` is the preferred name.
     """
 
     stability_threshold: float = 0.99
@@ -50,16 +45,6 @@ class DynamicsConfig:
             raise ValueError(
                 f"regularization must be non-negative, got {self.regularization}"
             )
-
-    @property
-    def nonstationary(self) -> bool:
-        """Alias for i1_factors (deprecated, use i1_factors instead)."""
-        return self.i1_factors
-
-    @nonstationary.setter
-    def nonstationary(self, value: bool) -> None:
-        """Set i1_factors via nonstationary alias."""
-        self.i1_factors = value
 
 
 class DMFMDynamics:
@@ -195,7 +180,7 @@ class DMFMDynamics:
             raise ValueError(f"Qmat has shape {Qmat.shape}, expected ({k2}, {k2})")
 
     # ------------------------------------------------------------------
-    # Convenience properties for backward compatibility
+    # Convenience properties
     # ------------------------------------------------------------------
 
     @property
@@ -206,16 +191,6 @@ class DMFMDynamics:
     @i1_factors.setter
     def i1_factors(self, value: bool) -> None:
         """Set i1_factors flag."""
-        self.config.i1_factors = value
-
-    @property
-    def nonstationary(self) -> bool:
-        """Alias for i1_factors (deprecated)."""
-        return self.config.i1_factors
-
-    @nonstationary.setter
-    def nonstationary(self, value: bool) -> None:
-        """Set i1_factors via nonstationary alias."""
         self.config.i1_factors = value
 
     @property

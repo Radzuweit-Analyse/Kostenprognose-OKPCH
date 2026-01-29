@@ -471,7 +471,6 @@ class EMEstimatorDMFM:
         # Store dynamics flags
         dyn_flags = {}
         if self.model.dynamics is not None:
-            dyn_flags["nonstationary"] = self.model.dynamics.nonstationary
             dyn_flags["kronecker_only"] = self.model.dynamics.kronecker_only
             dyn_flags["i1_factors"] = self.model.dynamics.i1_factors
 
@@ -498,7 +497,6 @@ class EMEstimatorDMFM:
 
         # Restore flags
         if dyn_flags:
-            self.model._dynamics.nonstationary = dyn_flags.get("nonstationary")
             self.model._dynamics.kronecker_only = dyn_flags.get("kronecker_only")
             self.model._dynamics.i1_factors = dyn_flags.get("i1_factors")
 
@@ -656,9 +654,9 @@ def _update_col_loadings(
     return C_new
 
 
-def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
+def _update_dynamics(F, A, B, Pord, k1, k2, i1_factors, kronecker_only):
     """Update dynamics matrices."""
-    if nonstationary:
+    if i1_factors:
         return A, B, [np.kron(B[l], A[l]) for l in range(Pord)]
 
     if kronecker_only:
