@@ -17,7 +17,7 @@ from .forecast import forecast_dmfm, ForecastConfig
 @dataclass
 class ValidationConfig:
     """Configuration for forecast validation.
-    
+
     Parameters
     ----------
     steps : int
@@ -31,12 +31,12 @@ class ValidationConfig:
     min_train_size : int, default 20
         Minimum training sample size.
     """
-    
+
     steps: int
     window_type: str = "expanding"
     window_size: int | None = None
     min_train_size: int = 20
-    
+
     def __post_init__(self) -> None:
         """Validate configuration."""
         if self.window_type not in ("expanding", "rolling"):
@@ -55,7 +55,7 @@ class ValidationConfig:
 @dataclass
 class ValidationResult:
     """Results from forecast validation.
-    
+
     Attributes
     ----------
     rmse : float
@@ -75,7 +75,7 @@ class ValidationResult:
     config : ValidationConfig
         Validation configuration used.
     """
-    
+
     rmse: float
     mae: float
     mape: float
@@ -90,16 +90,17 @@ class ValidationResult:
 # Error metrics
 # ---------------------------------------------------------------------------
 
+
 def compute_rmse(forecasts: np.ndarray, actuals: np.ndarray) -> float:
     """Compute root mean squared error.
-    
+
     Parameters
     ----------
     forecasts : np.ndarray
         Forecast values.
     actuals : np.ndarray
         Actual values.
-        
+
     Returns
     -------
     float
@@ -111,14 +112,14 @@ def compute_rmse(forecasts: np.ndarray, actuals: np.ndarray) -> float:
 
 def compute_mae(forecasts: np.ndarray, actuals: np.ndarray) -> float:
     """Compute mean absolute error.
-    
+
     Parameters
     ----------
     forecasts : np.ndarray
         Forecast values.
     actuals : np.ndarray
         Actual values.
-        
+
     Returns
     -------
     float
@@ -130,19 +131,19 @@ def compute_mae(forecasts: np.ndarray, actuals: np.ndarray) -> float:
 
 def compute_mape(forecasts: np.ndarray, actuals: np.ndarray) -> float:
     """Compute mean absolute percentage error.
-    
+
     Parameters
     ----------
     forecasts : np.ndarray
         Forecast values.
     actuals : np.ndarray
         Actual values.
-        
+
     Returns
     -------
     float
         MAPE in percentage points, ignoring NaN values and zeros.
-        
+
     Notes
     -----
     Values where actuals are zero or very small (< 1e-10) are excluded
@@ -152,21 +153,21 @@ def compute_mape(forecasts: np.ndarray, actuals: np.ndarray) -> float:
     valid = (np.abs(actuals) > 1e-10) & ~np.isnan(actuals) & ~np.isnan(forecasts)
     if not valid.any():
         return np.nan
-    
+
     err = np.abs((forecasts[valid] - actuals[valid]) / actuals[valid])
     return float(100.0 * np.mean(err))
 
 
 def compute_bias(forecasts: np.ndarray, actuals: np.ndarray) -> float:
     """Compute mean error (bias).
-    
+
     Parameters
     ----------
     forecasts : np.ndarray
         Forecast values.
     actuals : np.ndarray
         Actual values.
-        
+
     Returns
     -------
     float
@@ -179,14 +180,14 @@ def compute_bias(forecasts: np.ndarray, actuals: np.ndarray) -> float:
 
 def compute_metrics(forecasts: np.ndarray, actuals: np.ndarray) -> dict:
     """Compute all error metrics.
-    
+
     Parameters
     ----------
     forecasts : np.ndarray
         Forecast values.
     actuals : np.ndarray
         Actual values.
-        
+
     Returns
     -------
     dict
@@ -204,6 +205,7 @@ def compute_metrics(forecasts: np.ndarray, actuals: np.ndarray) -> dict:
 # Main validation functions
 # ---------------------------------------------------------------------------
 
+
 def out_of_sample_validate(
     Y: np.ndarray,
     val_config: ValidationConfig,
@@ -211,11 +213,11 @@ def out_of_sample_validate(
     mask: np.ndarray | None = None,
 ) -> ValidationResult:
     """Perform out-of-sample validation for DMFM forecast.
-    
+
     The model is estimated on Y excluding the last 'steps' observations.
     A forecast is produced for these periods and compared with the held-out
     data.
-    
+
     Parameters
     ----------
     Y : np.ndarray
@@ -226,22 +228,22 @@ def out_of_sample_validate(
         Forecast model configuration.
     mask : np.ndarray, optional
         Boolean mask for missing values (True = observed).
-        
+
     Returns
     -------
     ValidationResult
         Validation results including all error metrics.
-        
+
     Raises
     ------
     ValueError
         If Y is not 3D or validation steps exceed available data.
-        
+
     Examples
     --------
     >>> from forecast import ForecastConfig
     >>> from validation import ValidationConfig, out_of_sample_validate
-    >>> 
+    >>>
     >>> val_config = ValidationConfig(steps=8)
     >>> fcst_config = ForecastConfig(k1=2, k2=2, P=1)
     >>> result = out_of_sample_validate(Y, val_config, fcst_config)
@@ -251,18 +253,16 @@ def out_of_sample_validate(
     Y = np.asarray(Y, dtype=float)
     if Y.ndim != 3:
         raise ValueError(f"Y must be 3D array, got shape {Y.shape}")
-    
+
     steps = val_config.steps
     if steps <= 0 or steps >= Y.shape[0]:
-        raise ValueError(
-            f"steps must be between 1 and {Y.shape[0]-1}, got {steps}"
-        )
-    
+        raise ValueError(f"steps must be between 1 and {Y.shape[0]-1}, got {steps}")
+
     # Split data
     Y_train = Y[:-steps]
     Y_test = Y[-steps:]
     mask_train = mask[:-steps] if mask is not None else None
-    
+
     # Generate forecast
     result = forecast_dmfm(
         Y_train,
@@ -270,14 +270,14 @@ def out_of_sample_validate(
         config=forecast_config,
         mask=mask_train,
     )
-    
+
     forecasts = result.forecast
     actuals = Y_test
     errors = forecasts - actuals
-    
+
     # Compute metrics
     metrics = compute_metrics(forecasts, actuals)
-    
+
     return ValidationResult(
         rmse=metrics["rmse"],
         mae=metrics["mae"],
@@ -297,10 +297,10 @@ def rolling_window_validate(
     mask: np.ndarray | None = None,
 ) -> List[ValidationResult]:
     """Perform rolling window out-of-sample validation.
-    
+
     Creates multiple train/test splits using either expanding or rolling
     windows, evaluates forecasts on each, and returns individual results.
-    
+
     Parameters
     ----------
     Y : np.ndarray
@@ -311,17 +311,17 @@ def rolling_window_validate(
         Forecast model configuration.
     mask : np.ndarray, optional
         Boolean mask for missing values.
-        
+
     Returns
     -------
     list[ValidationResult]
         List of validation results, one per window.
-        
+
     Raises
     ------
     ValueError
         If insufficient data for validation windows.
-        
+
     Examples
     --------
     >>> val_config = ValidationConfig(
@@ -337,11 +337,11 @@ def rolling_window_validate(
     Y = np.asarray(Y, dtype=float)
     if Y.ndim != 3:
         raise ValueError(f"Y must be 3D array, got shape {Y.shape}")
-    
+
     T = Y.shape[0]
     steps = val_config.steps
     min_train = val_config.min_train_size
-    
+
     # Determine validation windows
     if val_config.window_type == "expanding":
         # Start with min_train, expand by one each iteration
@@ -352,12 +352,12 @@ def rolling_window_validate(
             raise ValueError("window_size required for rolling validation")
         # Fixed window size
         start_indices = range(window_size, T - steps)
-    
+
     if not start_indices:
         raise ValueError(
             f"Insufficient data: T={T}, steps={steps}, min_train={min_train}"
         )
-    
+
     results = []
     for train_end in start_indices:
         # Determine training window
@@ -365,14 +365,12 @@ def rolling_window_validate(
             train_start = 0
         else:
             train_start = train_end - val_config.window_size
-        
+
         # Split data
         Y_train = Y[train_start:train_end]
         Y_test = Y[train_end : train_end + steps]
-        mask_train = (
-            mask[train_start:train_end] if mask is not None else None
-        )
-        
+        mask_train = mask[train_start:train_end] if mask is not None else None
+
         # Generate forecast
         fcst_result = forecast_dmfm(
             Y_train,
@@ -380,14 +378,14 @@ def rolling_window_validate(
             config=forecast_config,
             mask=mask_train,
         )
-        
+
         forecasts = fcst_result.forecast
         actuals = Y_test
         errors = forecasts - actuals
-        
+
         # Compute metrics
         metrics = compute_metrics(forecasts, actuals)
-        
+
         results.append(
             ValidationResult(
                 rmse=metrics["rmse"],
@@ -400,24 +398,24 @@ def rolling_window_validate(
                 config=val_config,
             )
         )
-    
+
     return results
 
 
 def average_validation_results(results: List[ValidationResult]) -> dict:
     """Compute average metrics across multiple validation results.
-    
+
     Parameters
     ----------
     results : list[ValidationResult]
         List of validation results from rolling window validation.
-        
+
     Returns
     -------
     dict
         Average metrics with keys: rmse, mae, mape, bias, and their
         standard deviations (rmse_std, mae_std, etc.).
-        
+
     Examples
     --------
     >>> results = rolling_window_validate(Y, val_config)
@@ -426,12 +424,12 @@ def average_validation_results(results: List[ValidationResult]) -> dict:
     """
     if not results:
         raise ValueError("No results to average")
-    
+
     rmses = [r.rmse for r in results]
     maes = [r.mae for r in results]
     mapes = [r.mape for r in results if not np.isnan(r.mape)]
     biases = [r.bias for r in results]
-    
+
     return {
         "rmse": float(np.mean(rmses)),
         "rmse_std": float(np.std(rmses, ddof=1) if len(rmses) > 1 else 0),
@@ -449,6 +447,7 @@ def average_validation_results(results: List[ValidationResult]) -> dict:
 # Convenience wrapper (backward compatibility)
 # ---------------------------------------------------------------------------
 
+
 def out_of_sample_rmse(
     Y: np.ndarray,
     steps: int,
@@ -459,10 +458,10 @@ def out_of_sample_rmse(
     P: int = 1,
 ) -> float:
     """Compute out-of-sample RMSE for a DMFM forecast.
-    
+
     This is a convenience wrapper for backward compatibility.
     For more detailed validation, use `out_of_sample_validate()`.
-    
+
     Parameters
     ----------
     Y : np.ndarray
@@ -477,12 +476,12 @@ def out_of_sample_rmse(
         Number of factors.
     P : int, default 1
         MAR order.
-        
+
     Returns
     -------
     float
         Root mean squared error.
-        
+
     Examples
     --------
     >>> rmse = out_of_sample_rmse(Y, steps=8, k1=2, k2=2)
@@ -495,9 +494,7 @@ def out_of_sample_rmse(
         P=P,
         seasonal_period=seasonal_period,
     )
-    
-    result = out_of_sample_validate(
-        Y, val_config, forecast_config, mask
-    )
-    
+
+    result = out_of_sample_validate(Y, val_config, forecast_config, mask)
+
     return result.rmse

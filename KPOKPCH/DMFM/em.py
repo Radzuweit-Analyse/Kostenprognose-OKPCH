@@ -82,9 +82,7 @@ class EMEstimatorDMFM:
         Fitting results, available after calling fit().
     """
 
-    def __init__(
-        self, model: DMFMModel, config: EMConfig | None = None
-    ) -> None:
+    def __init__(self, model: DMFMModel, config: EMConfig | None = None) -> None:
         """Initialize EM estimator.
 
         Parameters
@@ -113,7 +111,7 @@ class EMEstimatorDMFM:
         self._loglik_trace: list[float] = []
         self._diff_trace: list[float] = []
 
-# ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Main fitting interface
     # ------------------------------------------------------------------
 
@@ -171,13 +169,13 @@ class EMEstimatorDMFM:
 
             # ---------- E-STEP ----------
             kf = KalmanFilterDMFM(self.model)
-            
+
             # Filter
             state = kf.filter(Y, mask)
-            
+
             # Smooth
             state = kf.smooth(state)
-            
+
             # Extract factors from smoothed states
             F = kf.extract_factors(state, smoothed=True)
 
@@ -196,10 +194,10 @@ class EMEstimatorDMFM:
             kf_eval = KalmanFilterDMFM(self.model)
             state_eval = kf_eval.filter(Y, mask)
             state_eval = kf_eval.smooth(state_eval)
-            
+
             # Update model factors with smoothed estimates
             self.model._F = kf_eval.extract_factors(state_eval, smoothed=True)
-            
+
             # Compute log-likelihood
             ll = kf_eval.log_likelihood(Y, mask, state_eval)
 
@@ -213,11 +211,7 @@ class EMEstimatorDMFM:
             )
 
             # Check for log-likelihood decrease
-            if (
-                self.config.check_loglik_increase
-                and it > 0
-                and (ll - last_ll) < -1e-6
-            ):
+            if self.config.check_loglik_increase and it > 0 and (ll - last_ll) < -1e-6:
                 if self.config.verbose:
                     print(
                         f"⚠️  Warning: Log-likelihood decreased at iteration {it + 1}"
@@ -251,18 +245,14 @@ class EMEstimatorDMFM:
             # Check convergence
             if diff < self.config.tol:
                 if self.config.verbose:
-                    print(
-                        f"✓ Converged at iteration {it + 1} (diff={diff:.2e})"
-                    )
+                    print(f"✓ Converged at iteration {it + 1} (diff={diff:.2e})")
                 break
 
             last_ll = ll
 
         else:
             if self.config.verbose:
-                print(
-                    f"⚠️  Maximum iterations ({self.config.max_iter}) reached"
-                )
+                print(f"⚠️  Maximum iterations ({self.config.max_iter}) reached")
 
         # Mark model as fitted
         self.model._is_fitted = True
@@ -311,9 +301,7 @@ class EMEstimatorDMFM:
             Dictionary of updated parameters.
         """
         # Update loadings
-        R_new = _update_row_loadings(
-            Y, F, self.model.C, self.model.R, mask
-        )
+        R_new = _update_row_loadings(Y, F, self.model.C, self.model.R, mask)
         C_new = _update_col_loadings(Y, F, R_new, self.model.C, mask)
 
         # Orthonormalize loadings
@@ -332,10 +320,8 @@ class EMEstimatorDMFM:
             self.model.P,
             self.model.k1,
             self.model.k2,
-            self.model.dynamics is not None
-            and self.model.dynamics.nonstationary,
-            self.model.dynamics is not None
-            and self.model.dynamics.kronecker_only,
+            self.model.dynamics is not None and self.model.dynamics.nonstationary,
+            self.model.dynamics is not None and self.model.dynamics.kronecker_only,
         )
 
         # Update drift
@@ -349,10 +335,8 @@ class EMEstimatorDMFM:
             A_new,
             B_new,
             Phi_new,
-            self.model.dynamics is not None
-            and self.model.dynamics.i1_factors,
-            self.model.dynamics is not None
-            and self.model.dynamics.kronecker_only,
+            self.model.dynamics is not None and self.model.dynamics.i1_factors,
+            self.model.dynamics is not None and self.model.dynamics.kronecker_only,
         )
 
         # Update idiosyncratic covariances
@@ -403,9 +387,7 @@ class EMEstimatorDMFM:
             "Q": self.model.Qmat.copy(),
         }
 
-    def _update_model_params(
-        self, new_params: dict[str, Any], F: np.ndarray
-    ) -> None:
+    def _update_model_params(self, new_params: dict[str, Any], F: np.ndarray) -> None:
         """Update model with new parameters.
 
         Parameters
@@ -444,12 +426,8 @@ class EMEstimatorDMFM:
 
         # Restore flags
         if dyn_flags:
-            self.model._dynamics.nonstationary = dyn_flags.get(
-                "nonstationary"
-            )
-            self.model._dynamics.kronecker_only = dyn_flags.get(
-                "kronecker_only"
-            )
+            self.model._dynamics.nonstationary = dyn_flags.get("nonstationary")
+            self.model._dynamics.kronecker_only = dyn_flags.get("kronecker_only")
             self.model._dynamics.i1_factors = dyn_flags.get("i1_factors")
 
     # ------------------------------------------------------------------
@@ -617,9 +595,7 @@ def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
         Y_rows = []
         for t in range(Pord, F.shape[0]):
             X_rows.append(
-                np.concatenate(
-                    [F[t - l - 1].reshape(-1) for l in range(Pord)]
-                )
+                np.concatenate([F[t - l - 1].reshape(-1) for l in range(Pord)])
             )
             Y_rows.append(F[t].reshape(-1))
         if X_rows:
@@ -627,12 +603,8 @@ def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
             Ymat = np.vstack(Y_rows)
             XTX = Xmat.T @ Xmat
             lam = 1e-6
-            coeff = np.linalg.solve(
-                XTX + lam * np.eye(XTX.shape[0]), Xmat.T @ Ymat
-            )
-            Phi_new = [
-                coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)
-            ]
+            coeff = np.linalg.solve(XTX + lam * np.eye(XTX.shape[0]), Xmat.T @ Ymat)
+            Phi_new = [coeff[l * r_vec : (l + 1) * r_vec, :].T for l in range(Pord)]
         else:
             Phi_new = [np.kron(B[l], A[l]) for l in range(Pord)]
         return A, B, Phi_new
@@ -714,9 +686,7 @@ def _update_drift(F: np.ndarray, A: list, B: list, P: int) -> np.ndarray:
     return C_drift
 
 
-def _update_innovations(
-    F, Vs, Vss, A_new, B_new, Phi_new, i1_factors, kronecker_only
-):
+def _update_innovations(F, Vs, Vss, A_new, B_new, Phi_new, i1_factors, kronecker_only):
     """Update innovation covariances."""
     Tn, k1, k2 = F.shape
     Pord = len(A_new)
@@ -758,12 +728,8 @@ def _update_innovations(
             count += 1
     else:
         for t in range(Pord, Tn):
-            x_t = np.concatenate(
-                [F[t - l].reshape(-1) for l in range(Pord)]
-            )
-            x_tm1 = np.concatenate(
-                [F[t - 1 - l].reshape(-1) for l in range(Pord)]
-            )
+            x_t = np.concatenate([F[t - l].reshape(-1) for l in range(Pord)])
+            x_tm1 = np.concatenate([F[t - 1 - l].reshape(-1) for l in range(Pord)])
             E_tt = Vs[t] + np.outer(x_t, x_t)
             E_tm1 = Vs[t - 1] + np.outer(x_tm1, x_tm1)
             E_cross = Vss[t - 1] + np.outer(x_t, x_tm1)
@@ -791,9 +757,7 @@ def _update_innovations(
     return P_new, Q_new
 
 
-def _update_idiosyncratic(
-    Y, F, R_new, C_new, mask, diagonal_idiosyncratic
-):
+def _update_idiosyncratic(Y, F, R_new, C_new, mask, diagonal_idiosyncratic):
     """Update idiosyncratic covariances."""
     Tn, p1, p2 = Y.shape
     H_new = np.zeros((p1, p1))

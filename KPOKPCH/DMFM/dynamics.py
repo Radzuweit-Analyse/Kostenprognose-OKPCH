@@ -164,26 +164,18 @@ class DMFMDynamics:
         # Check A matrices
         for i, A_i in enumerate(A):
             if A_i.shape != (k1, k1):
-                raise ValueError(
-                    f"A[{i}] has shape {A_i.shape}, expected ({k1}, {k1})"
-                )
+                raise ValueError(f"A[{i}] has shape {A_i.shape}, expected ({k1}, {k1})")
 
         # Check B matrices
         for i, B_i in enumerate(B):
             if B_i.shape != (k2, k2):
-                raise ValueError(
-                    f"B[{i}] has shape {B_i.shape}, expected ({k2}, {k2})"
-                )
+                raise ValueError(f"B[{i}] has shape {B_i.shape}, expected ({k2}, {k2})")
 
         # Check covariances
         if Pmat.shape != (k1, k1):
-            raise ValueError(
-                f"Pmat has shape {Pmat.shape}, expected ({k1}, {k1})"
-            )
+            raise ValueError(f"Pmat has shape {Pmat.shape}, expected ({k1}, {k1})")
         if Qmat.shape != (k2, k2):
-            raise ValueError(
-                f"Qmat has shape {Qmat.shape}, expected ({k2}, {k2})"
-            )
+            raise ValueError(f"Qmat has shape {Qmat.shape}, expected ({k2}, {k2})")
 
     # ------------------------------------------------------------------
     # Convenience properties for backward compatibility
@@ -327,9 +319,7 @@ class DMFMDynamics:
                 f"expected ({self.k1}, {self.k2})"
             )
         if F.shape[0] <= self.P:
-            raise ValueError(
-                f"Need at least {self.P + 1} time steps, got {F.shape[0]}"
-            )
+            raise ValueError(f"Need at least {self.P + 1} time steps, got {F.shape[0]}")
 
         A_new = [np.zeros_like(self.A[0]) for _ in range(self.P)]
         B_new = [np.zeros_like(self.B[0]) for _ in range(self.P)]
@@ -361,10 +351,11 @@ class DMFMDynamics:
                 B_den += X_B @ X_B.T
 
             # Solve for A_ell with regularization and NaN protection
-            if np.linalg.norm(A_den) > self.config.min_denominator_norm and not np.isnan(A_den).any():
-                A_est = A_num @ np.linalg.pinv(
-                    A_den, rcond=self.config.regularization
-                )
+            if (
+                np.linalg.norm(A_den) > self.config.min_denominator_norm
+                and not np.isnan(A_den).any()
+            ):
+                A_est = A_num @ np.linalg.pinv(A_den, rcond=self.config.regularization)
                 # Check for NaNs in the estimate
                 if not np.isnan(A_est).any():
                     A_new[ell] = self._enforce_stability(A_est)
@@ -374,10 +365,11 @@ class DMFMDynamics:
                 A_new[ell] = self.A[ell]
 
             # Solve for B_ell with regularization and NaN protection
-            if np.linalg.norm(B_den) > self.config.min_denominator_norm and not np.isnan(B_den).any():
-                B_est = B_num @ np.linalg.pinv(
-                    B_den, rcond=self.config.regularization
-                )
+            if (
+                np.linalg.norm(B_den) > self.config.min_denominator_norm
+                and not np.isnan(B_den).any()
+            ):
+                B_est = B_num @ np.linalg.pinv(B_den, rcond=self.config.regularization)
                 # Check for NaNs in the estimate
                 if not np.isnan(B_est).any():
                     B_new[ell] = self._enforce_stability(B_est)
@@ -484,4 +476,3 @@ class DMFMDynamics:
             f"DMFMDynamics(P={self.P}, k1={self.k1}, k2={self.k2}, "
             f"{stability_str}, max_eval={max_eval:.3f})"
         )
-    

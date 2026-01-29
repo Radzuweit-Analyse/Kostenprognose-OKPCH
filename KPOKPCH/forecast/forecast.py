@@ -21,7 +21,7 @@ from ..DMFM import (
 @dataclass
 class ForecastConfig:
     """Configuration for DMFM forecasting.
-    
+
     Parameters
     ----------
     k1, k2 : int, default 1
@@ -42,7 +42,7 @@ class ForecastConfig:
     verbose : bool, default False
         Whether to print fitting progress.
     """
-    
+
     k1: int = 1
     k2: int = 1
     P: int = 1
@@ -57,7 +57,7 @@ class ForecastConfig:
 @dataclass
 class ForecastResult:
     """Results from DMFM forecasting.
-    
+
     Attributes
     ----------
     forecast : np.ndarray
@@ -69,7 +69,7 @@ class ForecastResult:
     seasonal_adjusted : bool
         Whether seasonal differencing was applied.
     """
-    
+
     forecast: np.ndarray
     model: DMFMModel
     config: ForecastConfig
@@ -80,26 +80,27 @@ class ForecastResult:
 # Seasonal differencing utilities
 # ---------------------------------------------------------------------------
 
+
 def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
     """Compute seasonal differences of Y.
-    
+
     Parameters
     ----------
     Y : np.ndarray
         Data of shape (T, p1, p2).
     period : int
         Seasonal period (e.g., 4 for quarterly data).
-        
+
     Returns
     -------
     np.ndarray
         Seasonal differences of shape (T-period, p1, p2).
-        
+
     Raises
     ------
     ValueError
         If Y is not 3D or period is invalid.
-        
+
     Examples
     --------
     >>> Y_diff = seasonal_difference(Y, period=4)  # Quarterly seasonal diff
@@ -107,13 +108,11 @@ def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
     Y = np.asarray(Y, dtype=float)
     if Y.ndim != 3:
         raise ValueError(f"Y must be 3D array, got shape {Y.shape}")
-    
+
     T = Y.shape[0]
     if period <= 0 or period >= T:
-        raise ValueError(
-            f"period must be between 1 and {T-1}, got {period}"
-        )
-    
+        raise ValueError(f"period must be between 1 and {T-1}, got {period}")
+
     return Y[period:] - Y[:-period]
 
 
@@ -121,7 +120,7 @@ def integrate_seasonal_diff(
     last_obs: np.ndarray, diffs: np.ndarray, period: int
 ) -> np.ndarray:
     """Integrate seasonal differences back to levels.
-    
+
     Parameters
     ----------
     last_obs : np.ndarray
@@ -130,12 +129,12 @@ def integrate_seasonal_diff(
         Seasonal difference forecasts, shape (steps, p1, p2).
     period : int
         Seasonal period.
-        
+
     Returns
     -------
     np.ndarray
         Level forecasts of shape (steps, p1, p2).
-        
+
     Examples
     --------
     >>> # Y has shape (100, 10, 5), we forecast 8 steps with period=4
@@ -145,13 +144,13 @@ def integrate_seasonal_diff(
     """
     history = list(np.asarray(last_obs))
     result = []
-    
+
     for diff in np.asarray(diffs):
         baseline = history[-period]
         next_level = diff + baseline
         history.append(next_level)
         result.append(next_level)
-    
+
     return np.stack(result, axis=0)
 
 
@@ -159,7 +158,10 @@ def integrate_seasonal_diff(
 # Data loading utilities
 # ---------------------------------------------------------------------------
 
-def load_cost_matrix(path: str) -> (
+
+def load_cost_matrix(
+    path: str,
+) -> (
     Tuple[List[str], List[str], np.ndarray]
     | Tuple[List[str], List[str], List[str], np.ndarray]
 ):
@@ -170,7 +172,7 @@ def load_cost_matrix(path: str) -> (
     * **Wide 2D format**: Column headers are ``Period`` followed by canton names.
       Returns ``(periods, cantons, data)`` where ``data`` has shape
       ``(T, num_cantons)``.
-      
+
     * **Tensor format**: Column headers are ``<Canton>|<Group>`` for each
       cost group. Returns ``(periods, cantons, groups, data)`` where ``data``
       has shape ``(T, num_cantons, num_groups)``.
@@ -196,22 +198,22 @@ def load_cost_matrix(path: str) -> (
     >>> # 2D format
     >>> periods, cantons, data = load_cost_matrix("costs_2d.csv")
     >>> print(data.shape)  # (T, num_cantons)
-    
+
     >>> # 3D tensor format
     >>> periods, cantons, groups, data = load_cost_matrix("costs_3d.csv")
     >>> print(data.shape)  # (T, num_cantons, num_groups)
     """
     periods: List[str] = []
     data_rows = []
-    
+
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         header = next(reader)
         raw_columns = header[1:]
-        
+
         # Detect format
         has_groups = all("|" in col for col in raw_columns)
-        
+
         if has_groups:
             # Parse canton|group headers
             canton_group_pairs: List[Tuple[str, str]] = []
@@ -231,7 +233,7 @@ def load_cost_matrix(path: str) -> (
             canton_group_pairs = [(canton, "") for canton in raw_columns]
             cantons = list(raw_columns)
             groups = [""]
-        
+
         # Read data rows
         for row in reader:
             periods.append(row[0])
@@ -242,20 +244,18 @@ def load_cost_matrix(path: str) -> (
                 except ValueError:
                     values.append(np.nan)
             data_rows.append(values)
-    
+
     flat = np.array(data_rows, dtype=float)
-    
+
     if has_groups:
         # Reshape to 3D tensor
-        data = np.full(
-            (len(periods), len(cantons), len(groups)), np.nan, dtype=float
-        )
+        data = np.full((len(periods), len(cantons), len(groups)), np.nan, dtype=float)
         canton_idx = {c: i for i, c in enumerate(cantons)}
         group_idx = {g: j for j, g in enumerate(groups)}
-        
+
         for col, (canton, group) in enumerate(canton_group_pairs):
             data[:, canton_idx[canton], group_idx[group]] = flat[:, col]
-        
+
         return periods, cantons, groups, data
 
     return periods, cantons, flat
@@ -265,21 +265,22 @@ def load_cost_matrix(path: str) -> (
 # Period utilities
 # ---------------------------------------------------------------------------
 
+
 def generate_future_periods(last_period: str, steps: int) -> List[str]:
     """Generate future quarterly period labels.
-    
+
     Parameters
     ----------
     last_period : str
         Last observed period in format "YYYYQQ" (e.g., "2024Q4").
     steps : int
         Number of future periods to generate.
-        
+
     Returns
     -------
     list[str]
         Future period labels.
-        
+
     Examples
     --------
     >>> generate_future_periods("2024Q4", 8)
@@ -288,20 +289,21 @@ def generate_future_periods(last_period: str, steps: int) -> List[str]:
     year = int(last_period[:4])
     quarter = int(last_period[-1])
     periods = []
-    
+
     for _ in range(steps):
         quarter += 1
         if quarter > 4:
             quarter = 1
             year += 1
         periods.append(f"{year}Q{quarter}")
-    
+
     return periods
 
 
 # ---------------------------------------------------------------------------
 # Growth rate calculations
 # ---------------------------------------------------------------------------
+
 
 def compute_q4_growth(
     periods: List[str],
@@ -310,7 +312,7 @@ def compute_q4_growth(
     future_periods: List[str],
 ) -> dict:
     """Compute Q4-over-Q4 growth metrics for cantonal forecasts.
-    
+
     Parameters
     ----------
     periods : list[str]
@@ -321,7 +323,7 @@ def compute_q4_growth(
         Forecast values.
     future_periods : list[str]
         Future period labels.
-        
+
     Returns
     -------
     dict
@@ -330,7 +332,7 @@ def compute_q4_growth(
         - growth_y2: Year 2 Q4-over-Q4 growth rates (%)
         - mean_y1, sd_y1, ci_y1: Statistics for year 1
         - mean_y2, sd_y2, ci_y2: Statistics for year 2
-        
+
     Raises
     ------
     ValueError
@@ -342,26 +344,24 @@ def compute_q4_growth(
         if periods[i].endswith("Q4"):
             base_idx = i
             break
-    
+
     if base_idx is None:
         raise ValueError("No Q4 observation in historical data")
-    
+
     base = data[base_idx]
-    
+
     # Find future Q4 indices
     q4_indices = [i for i, p in enumerate(future_periods) if p.endswith("Q4")]
     if len(q4_indices) < 2:
-        raise ValueError(
-            f"Need two future Q4 values, found {len(q4_indices)}"
-        )
-    
+        raise ValueError(f"Need two future Q4 values, found {len(q4_indices)}")
+
     # Compute growth rates
     fcst_y1 = fcst[q4_indices[0]]
     fcst_y2 = fcst[q4_indices[1]]
-    
+
     growth_y1 = 100.0 * (fcst_y1 - base) / base
     growth_y2 = 100.0 * (fcst_y2 - fcst_y1) / fcst_y1
-    
+
     return {
         "growth_y1": growth_y1,
         "growth_y2": growth_y2,
@@ -378,6 +378,7 @@ def compute_q4_growth(
 # Main forecasting functions
 # ---------------------------------------------------------------------------
 
+
 def forecast_dmfm(
     Y: np.ndarray,
     steps: int,
@@ -386,10 +387,10 @@ def forecast_dmfm(
     **kwargs,
 ) -> ForecastResult:
     """Forecast with a DMFM model.
-    
+
     This function fits a DMFM to the data and generates forecasts by
     iteratively applying the learned dynamics.
-    
+
     Parameters
     ----------
     Y : np.ndarray
@@ -402,27 +403,27 @@ def forecast_dmfm(
         Boolean mask for missing values (True = observed).
     **kwargs
         Additional arguments override config values (e.g., k1=2, P=2).
-        
+
     Returns
     -------
     ForecastResult
         Forecast results including point forecasts and fitted model.
-        
+
     Raises
     ------
     ValueError
         If Y is not 3D or steps is non-positive.
-        
+
     Examples
     --------
     >>> # Basic usage with defaults
     >>> result = forecast_dmfm(Y, steps=8)
     >>> print(result.forecast.shape)  # (8, p1, p2)
-    
+
     >>> # Custom configuration
     >>> config = ForecastConfig(k1=2, k2=2, P=2, seasonal_period=4)
     >>> result = forecast_dmfm(Y, steps=8, config=config)
-    
+
     >>> # Override config with kwargs
     >>> result = forecast_dmfm(Y, steps=8, config=config, k1=3)
     """
@@ -432,7 +433,7 @@ def forecast_dmfm(
         raise ValueError(f"Y must be 3D array, got shape {Y.shape}")
     if steps <= 0:
         raise ValueError(f"steps must be positive, got {steps}")
-    
+
     # Create/merge configuration
     if config is None:
         config = ForecastConfig(**kwargs)
@@ -441,20 +442,20 @@ def forecast_dmfm(
         config_dict = config.__dict__.copy()
         config_dict.update(kwargs)
         config = ForecastConfig(**config_dict)
-    
+
     if mask is None:
         mask = ~np.isnan(Y)
-    
+
     # Apply seasonal differencing if requested
     seasonal_adjusted = False
     if config.seasonal_period is not None:
         Y_fit = seasonal_difference(Y, config.seasonal_period)
-        mask_fit = mask[config.seasonal_period:] & mask[:-config.seasonal_period]
+        mask_fit = mask[config.seasonal_period :] & mask[: -config.seasonal_period]
         seasonal_adjusted = True
     else:
         Y_fit = Y
         mask_fit = mask
-    
+
     # Fit model
     model, em_result = fit_dmfm(
         Y_fit,
@@ -468,26 +469,26 @@ def forecast_dmfm(
         tol=config.tol,
         verbose=config.verbose,
     )
-    
+
     # Generate forecasts by iterating dynamics
     F_hist = [model.F[-l] for l in range(1, model.P + 1)]
     fcst = []
-    
+
     for _ in range(steps):
         F_next = model.dynamics.evolve(F_hist)
         Y_next = model.R @ F_next @ model.C.T
         fcst.append(Y_next)
-        
+
         # Update history
         F_hist = [F_next] + F_hist[:-1]
-    
+
     fcst = np.stack(fcst, axis=0)
-    
+
     # Integrate seasonal differences if applied
     if seasonal_adjusted:
-        last_obs = Y[-config.seasonal_period:]
+        last_obs = Y[-config.seasonal_period :]
         fcst = integrate_seasonal_diff(last_obs, fcst, config.seasonal_period)
-    
+
     return ForecastResult(
         forecast=fcst,
         model=model,
@@ -504,7 +505,7 @@ def canton_forecast(
     separate_cantons: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Forecast cantonal costs with per-canton and aggregate totals.
-    
+
     Parameters
     ----------
     Y : np.ndarray
@@ -519,24 +520,24 @@ def canton_forecast(
         If True, fit a univariate DMFM for each canton independently and
         sum the resulting forecasts. Otherwise, estimate one panel DMFM
         across all cantons jointly.
-        
+
     Returns
     -------
     forecasts : np.ndarray
         Per-canton forecasts of shape (steps, num_cantons).
     total : np.ndarray
         Aggregate forecast of shape (steps,).
-        
+
     Raises
     ------
     ValueError
         If Y has invalid dimensions or mask doesn't match.
-        
+
     Examples
     --------
     >>> # Joint forecast across all cantons
     >>> fcst_cantons, fcst_total = canton_forecast(Y, steps=8)
-    
+
     >>> # Separate forecast per canton
     >>> fcst_cantons, fcst_total = canton_forecast(
     ...     Y, steps=8, separate_cantons=True
@@ -548,18 +549,17 @@ def canton_forecast(
         Y = Y[:, :, None]
     if Y.ndim != 3:
         raise ValueError(
-            f"Y must be 2D (T, cantons) or 3D (T, cantons, 1), "
-            f"got shape {Y.shape}"
+            f"Y must be 2D (T, cantons) or 3D (T, cantons, 1), " f"got shape {Y.shape}"
         )
-    
+
     if mask is not None and mask.shape[:2] != Y.shape[:2]:
         raise ValueError(
             f"mask shape {mask.shape[:2]} must match Y shape {Y.shape[:2]}"
         )
-    
+
     if config is None:
         config = ForecastConfig()
-    
+
     if separate_cantons:
         # Fit separate model for each canton
         forecasts = []
@@ -576,8 +576,8 @@ def canton_forecast(
         # Fit joint panel model
         result = forecast_dmfm(Y, steps, config=config, mask=mask)
         fcst_array = result.forecast[:, :, 0]
-    
+
     # Compute total
     total = np.nansum(fcst_array, axis=1)
-    
+
     return fcst_array, total

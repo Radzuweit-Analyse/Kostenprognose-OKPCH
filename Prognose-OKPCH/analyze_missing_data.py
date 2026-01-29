@@ -5,6 +5,7 @@ import pandas as pd
 from pathlib import Path
 from KPOKPCH.forecast import load_cost_matrix
 
+
 def main():
     """Analyze missing data patterns."""
     # Load data
@@ -22,7 +23,9 @@ def main():
     total_values = data.size
 
     print(f"\n📊 Overall missing data:")
-    print(f"   Total missing: {total_missing}/{total_values} ({100*total_missing/total_values:.2f}%)")
+    print(
+        f"   Total missing: {total_missing}/{total_values} ({100*total_missing/total_values:.2f}%)"
+    )
 
     # Missing by time period
     print(f"\n📅 Missing data by period:")
@@ -30,7 +33,9 @@ def main():
         period_missing = missing_mask[t].sum()
         period_total = missing_mask[t].size
         if period_missing > 0:
-            print(f"   {period}: {period_missing}/{period_total} ({100*period_missing/period_total:.1f}%)")
+            print(
+                f"   {period}: {period_missing}/{period_total} ({100*period_missing/period_total:.1f}%)"
+            )
 
     # Missing by canton
     print(f"\n🏛️  Missing data by canton:")
@@ -38,14 +43,16 @@ def main():
         canton_missing = missing_mask[:, i, :].sum()
         canton_total = missing_mask[:, i, :].size
         if canton_missing > 0:
-            print(f"   {canton}: {canton_missing}/{canton_total} ({100*canton_missing/canton_total:.1f}%)")
+            print(
+                f"   {canton}: {canton_missing}/{canton_total} ({100*canton_missing/canton_total:.1f}%)"
+            )
 
     # Missing by cost group
     print(f"\n💰 Missing data by cost group:")
     for j, group in enumerate(groups):
         group_missing = missing_mask[:, :, j].sum()
         group_total = missing_mask[:, :, j].size
-        pct = 100*group_missing/group_total
+        pct = 100 * group_missing / group_total
         print(f"   {group:45s}: {group_missing:4d}/{group_total} ({pct:5.1f}%)")
 
     # Find specific missing combinations
@@ -59,6 +66,7 @@ def main():
 
     # Group by cost group
     from collections import defaultdict
+
     by_group = defaultdict(list)
     for period, canton, group, value in missing_combos:
         by_group[group].append((period, canton))
@@ -82,7 +90,10 @@ def main():
         year_missing = sum(missing_mask[t].sum() for t in year_indices)
         year_total = sum(missing_mask[t].size for t in year_indices)
         if year_missing > 0:
-            print(f"   {year}: {year_missing}/{year_total} ({100*year_missing/year_total:.1f}%)")
+            print(
+                f"   {year}: {year_missing}/{year_total} ({100*year_missing/year_total:.1f}%)"
+            )
+
 
 if __name__ == "__main__":
     main()

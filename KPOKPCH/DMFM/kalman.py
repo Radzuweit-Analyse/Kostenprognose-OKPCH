@@ -95,9 +95,7 @@ class KalmanFilterDMFM:
         Most recent filter/smoother state, available after calling filter().
     """
 
-    def __init__(
-        self, model: "DMFMModel", config: KalmanConfig | None = None
-    ) -> None:
+    def __init__(self, model: "DMFMModel", config: KalmanConfig | None = None) -> None:
         """Initialize Kalman filter.
 
         Parameters
@@ -187,9 +185,7 @@ class KalmanFilterDMFM:
 
         # Observation noise covariance R
         if m.diagonal_idiosyncratic:
-            R = np.kron(
-                np.diag(np.diag(m.K)), np.diag(np.diag(m.H))
-            )
+            R = np.kron(np.diag(np.diag(m.K)), np.diag(np.diag(m.H)))
         else:
             R = np.kron(m.K, m.H)
 
@@ -210,9 +206,7 @@ class KalmanFilterDMFM:
     # Filtering
     # ------------------------------------------------------------------
 
-    def filter(
-        self, Y: np.ndarray, mask: np.ndarray | None = None
-    ) -> KalmanState:
+    def filter(self, Y: np.ndarray, mask: np.ndarray | None = None) -> KalmanState:
         """Run Kalman filter on observed data.
 
         Parameters
@@ -241,9 +235,7 @@ class KalmanFilterDMFM:
         T, mu, Q, Z, R = self._construct_matrices()
 
         # Run filter
-        x_pred, P_pred, x_filt, P_filt = self._kalman_filter(
-            Y, mask, T, mu, Q, Z, R
-        )
+        x_pred, P_pred, x_filt, P_filt = self._kalman_filter(Y, mask, T, mu, Q, Z, R)
 
         # Store state
         self.state = KalmanState(
@@ -306,9 +298,7 @@ class KalmanFilterDMFM:
                     P_prior = 0.5 * (P_prior + P_prior.T)
 
             # Update step
-            x_post, P_post = self._kalman_update(
-                Y[t], mask[t], x_prior, P_prior, Z, R
-            )
+            x_post, P_post = self._kalman_update(Y[t], mask[t], x_prior, P_prior, Z, R)
 
             # Store
             x_pred[t] = x_prior
@@ -412,9 +402,7 @@ class KalmanFilterDMFM:
             state = self.state
 
         if state is None:
-            raise ValueError(
-                "No filtered state available. Call filter() first."
-            )
+            raise ValueError("No filtered state available. Call filter() first.")
 
         T, mu, _, _, _ = self._construct_matrices()
 
@@ -467,25 +455,17 @@ class KalmanFilterDMFM:
         for t in range(Tn - 2, -1, -1):
             # Smoother gain J_t = P_filt[t] @ T^T @ P_pred[t+1]^{-1}
             try:
-                P_pred_inv = inv(
-                    P_pred[t + 1]
-                    + self.config.regularization * np.eye(d)
-                )
+                P_pred_inv = inv(P_pred[t + 1] + self.config.regularization * np.eye(d))
             except LinAlgError:
                 P_pred_inv = np.linalg.pinv(
-                    P_pred[t + 1]
-                    + self.config.regularization * np.eye(d)
+                    P_pred[t + 1] + self.config.regularization * np.eye(d)
                 )
 
             J[t] = P_filt[t] @ T.T @ P_pred_inv
 
             # Smooth
-            x_smooth[t] = x_filt[t] + J[t] @ (
-                x_smooth[t + 1] - x_pred[t + 1]
-            )
-            P_smooth[t] = P_filt[t] + J[t] @ (
-                P_smooth[t + 1] - P_pred[t + 1]
-            ) @ J[t].T
+            x_smooth[t] = x_filt[t] + J[t] @ (x_smooth[t + 1] - x_pred[t + 1])
+            P_smooth[t] = P_filt[t] + J[t] @ (P_smooth[t + 1] - P_pred[t + 1]) @ J[t].T
 
             if self.config.check_symmetry:
                 P_smooth[t] = 0.5 * (P_smooth[t] + P_smooth[t].T)
@@ -540,9 +520,7 @@ class KalmanFilterDMFM:
             state = self.state
 
         if state is None or state.x_smooth is None:
-            raise ValueError(
-                "No smoothed state available. Call smooth() first."
-            )
+            raise ValueError("No smoothed state available. Call smooth() first.")
 
         return self._compute_loglik(Y, mask, state)
 
@@ -649,9 +627,7 @@ class KalmanFilterDMFM:
 
         if smoothed:
             if state.x_smooth is None:
-                raise ValueError(
-                    "No smoothed state available. Call smooth() first."
-                )
+                raise ValueError("No smoothed state available. Call smooth() first.")
             x = state.x_smooth
         else:
             x = state.x_filt
@@ -665,9 +641,7 @@ class KalmanFilterDMFM:
     def __repr__(self) -> str:
         """String representation."""
         has_filtered = self.state is not None
-        has_smoothed = (
-            self.state is not None and self.state.x_smooth is not None
-        )
+        has_smoothed = self.state is not None and self.state.x_smooth is not None
         status = []
         if has_filtered:
             status.append("filtered")

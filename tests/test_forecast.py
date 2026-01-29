@@ -79,8 +79,12 @@ def test_compute_q4_growth():
 def test_canton_forecast_separate_and_joint_consistent():
     Y = np.ones((8, 3))
     mask = np.ones_like(Y, dtype=bool)
-    fcst_joint, total_joint = canton_forecast(Y, 2, mask=mask[..., None], separate_cantons=False)
-    fcst_sep, total_sep = canton_forecast(Y, 2, mask=mask[..., None], separate_cantons=True)
+    fcst_joint, total_joint = canton_forecast(
+        Y, 2, mask=mask[..., None], separate_cantons=False
+    )
+    fcst_sep, total_sep = canton_forecast(
+        Y, 2, mask=mask[..., None], separate_cantons=True
+    )
     assert fcst_joint.shape == (2, 3)
     np.testing.assert_allclose(total_sep, fcst_sep.sum(axis=1))
     np.testing.assert_allclose(total_joint, fcst_joint.sum(axis=1))

@@ -41,7 +41,9 @@ class DMFMConfig:
         if self.p1 <= 0 or self.p2 <= 0:
             raise ValueError(f"Dimensions must be positive: p1={self.p1}, p2={self.p2}")
         if self.k1 <= 0 or self.k2 <= 0:
-            raise ValueError(f"Number of factors must be positive: k1={self.k1}, k2={self.k2}")
+            raise ValueError(
+                f"Number of factors must be positive: k1={self.k1}, k2={self.k2}"
+            )
         if self.k1 > self.p1 or self.k2 > self.p2:
             raise ValueError(
                 f"Factors cannot exceed dimensions: k1={self.k1} > p1={self.p1} "
@@ -282,16 +284,12 @@ class DMFMModel:
         self._init_method = method
 
         # Initialize dynamics with zero drift (will be estimated during EM)
-        self._dynamics = DMFMDynamics(
-            A, B, Pmat, Qmat, C=np.zeros((self.k1, self.k2))
-        )
+        self._dynamics = DMFMDynamics(A, B, Pmat, Qmat, C=np.zeros((self.k1, self.k2)))
 
     def _check_initialized(self) -> None:
         """Raise error if model not initialized."""
         if not self.is_initialized():
-            raise ValueError(
-                "Model not initialized. Call initialize() before fitting."
-            )
+            raise ValueError("Model not initialized. Call initialize() before fitting.")
 
     def _check_fitted(self) -> None:
         """Raise error if model not fitted."""

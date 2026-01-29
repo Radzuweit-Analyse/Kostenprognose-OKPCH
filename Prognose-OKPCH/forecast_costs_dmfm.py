@@ -19,21 +19,21 @@ def main():
     # Load data
     csv_path = Path(__file__).resolve().parent / "health_costs_tensor.csv"
     loaded = load_cost_matrix(str(csv_path))
-    
+
     if len(loaded) == 4:
         periods, cantons, groups, data = loaded
     else:
         periods, cantons, data = loaded
         groups = ["Total"]
         data = data[:, :, None] if data.ndim == 2 else data
-    
+
     print(f"\n📊 Data loaded:")
     print(f"   Periods: {len(periods)} ({periods[0]} to {periods[-1]})")
     print(f"   Cantons: {len(cantons)}")
     print(f"   Cost groups: {len(groups)}")
     print(f"   Groups: {groups}")
     print(f"   Data shape: {data.shape}")
-    
+
     # Scale to thousands
     scale = 1000.0
     Y = data / scale  # (T, cantons, groups)
@@ -44,7 +44,9 @@ def main():
         autres_idx = groups.index("Autres")
 
         # Add Psychothérapeutes to Autres (treating NaN as 0)
-        Y[:, :, autres_idx] = np.nansum(np.stack([Y[:, :, autres_idx], Y[:, :, psycho_idx]]), axis=0)
+        Y[:, :, autres_idx] = np.nansum(
+            np.stack([Y[:, :, autres_idx], Y[:, :, psycho_idx]]), axis=0
+        )
 
         # Remove Psychothérapeutes column
         keep_indices = [i for i in range(len(groups)) if i != psycho_idx]
@@ -88,8 +90,12 @@ def main():
         print(f"   Stable: {is_stable}, λ_max: {max_eval:.3f}")
     except (np.linalg.LinAlgError, ValueError) as e:
         print(f"   Could not check stability: {str(e)[:50]}")
-        print(f"   A matrices contain NaN: {any(np.isnan(A).any() for A in result.model.dynamics.A)}")
-        print(f"   B matrices contain NaN: {any(np.isnan(B).any() for B in result.model.dynamics.B)}")
+        print(
+            f"   A matrices contain NaN: {any(np.isnan(A).any() for A in result.model.dynamics.A)}"
+        )
+        print(
+            f"   B matrices contain NaN: {any(np.isnan(B).any() for B in result.model.dynamics.B)}"
+        )
 
     print(f"   Seasonal adjusted: {result.seasonal_adjusted}")
     print(f"   Forecast contains NaN: {np.isnan(fcst).any()}")
@@ -98,7 +104,9 @@ def main():
 
     # Aggregate across all forecasted cost groups (MAR specification)
     # Note: Psychothérapeutes was merged into Autres earlier
-    data_total = np.sum(data[:, :, keep_indices] if "Psychothérapeutes" in groups else data, axis=2)  # (T, cantons)
+    data_total = np.sum(
+        data[:, :, keep_indices] if "Psychothérapeutes" in groups else data, axis=2
+    )  # (T, cantons)
     fcst_total = np.sum(fcst, axis=2)  # (steps, cantons)
 
     # Check forecast trend for CH
@@ -106,17 +114,25 @@ def main():
     print(f"\n📊 CH forecast diagnostics:")
     print(f"   Last 4 quarters ({periods[-4:]}): {data_total[-4:, ch_idx]}")
     print(f"   First 5 forecast qtrs ({future_periods[:5]}): {fcst_total[:5, ch_idx]}")
-    
+
     first_forecast_date = fcst_total[0, ch_idx]
     one_year_earlier = data_total[-4, ch_idx]
     one_year_later = fcst_total[4, ch_idx] if len(fcst_total) > 4 else None
 
-    growth_current_year = 100 * (first_forecast_date - one_year_earlier) / one_year_earlier
+    growth_current_year = (
+        100 * (first_forecast_date - one_year_earlier) / one_year_earlier
+    )
     print(f"   One year earlier, actual: {one_year_earlier:.0f}")
-    print(f"   First forecast date: {first_forecast_date:.0f} (YoY growth: {growth_current_year:.1f}%)")
+    print(
+        f"   First forecast date: {first_forecast_date:.0f} (YoY growth: {growth_current_year:.1f}%)"
+    )
     if one_year_later:
-        growth_next_year = 100 * (one_year_later - first_forecast_date) / first_forecast_date
-        print(f"   One year later, forecast: {one_year_later:.0f} (YoY growth: {growth_next_year:.1f}%)")
+        growth_next_year = (
+            100 * (one_year_later - first_forecast_date) / first_forecast_date
+        )
+        print(
+            f"   One year later, forecast: {one_year_later:.0f} (YoY growth: {growth_next_year:.1f}%)"
+        )
     print(f"   Historical average YoY growth: 3.0%, Recent: 4.4%")
 
     # Compute yearly totals (using aggregated totals across all cost groups)
@@ -130,12 +146,7 @@ def main():
 
     # Plot results
     plot_forecasts(
-        periods,
-        data_total,
-        future_periods,
-        fcst_total,
-        cantons,
-        cost_group=label
+        periods, data_total, future_periods, fcst_total, cantons, cost_group=label
     )
 
     # Compute CH yearly totals (partial years + forecast)
@@ -160,7 +171,7 @@ def compute_yearly_totals(
     fcst_total: np.ndarray,
 ) -> dict[str, np.ndarray]:
     """Compute yearly totals from historical and forecast data.
-    
+
     Parameters
     ----------
     periods : list[str]
@@ -171,7 +182,7 @@ def compute_yearly_totals(
         Future period labels.
     fcst_total : np.ndarray
         Forecast data (steps, cantons).
-        
+
     Returns
     -------
     dict
@@ -179,12 +190,12 @@ def compute_yearly_totals(
     """
     yearly_totals: dict[str, np.ndarray] = {}
     quarter_counts: dict[str, int] = {}
-    
+
     # Get last historical period info
     last_period = periods[-1]
     last_year = last_period[:4]
     last_quarter = int(last_period[-1])
-    
+
     # Accumulate historical quarters for final year
     for period, row in zip(periods, data_total):
         year = period[:4]
@@ -192,24 +203,24 @@ def compute_yearly_totals(
             yearly_totals.setdefault(year, np.zeros(data_total.shape[1]))
             quarter_counts[year] = quarter_counts.get(year, 0) + 1
             yearly_totals[year] += np.nan_to_num(row)
-    
+
     # Accumulate forecast quarters
     for i, period in enumerate(future_periods):
         year = period[:4]
         yearly_totals.setdefault(year, np.zeros(fcst_total.shape[1]))
         quarter_counts[year] = quarter_counts.get(year, 0) + 1
         yearly_totals[year] += np.nan_to_num(fcst_total[i])
-    
+
     # Filter to complete years only
     complete_totals = {}
     start_year = int(last_year) if last_quarter < 4 else int(last_year) + 1
-    
+
     for year in sorted(yearly_totals.keys()):
         if int(year) < start_year:
             continue
         if quarter_counts.get(year, 0) == 4:
             complete_totals[year] = yearly_totals[year]
-    
+
     return complete_totals
 
 
@@ -220,7 +231,7 @@ def print_yearly_forecasts(
     cost_group: str,
 ) -> None:
     """Print yearly forecast totals.
-    
+
     Parameters
     ----------
     yearly_totals : dict
@@ -249,7 +260,7 @@ def plot_forecasts(
     output_path: str = "forecast_plot.pdf",
 ) -> None:
     """Plot historical data with forecasts.
-    
+
     Parameters
     ----------
     periods : list[str]
@@ -270,51 +281,51 @@ def plot_forecasts(
     # Combine periods and data
     combined_periods = periods + future_periods
     combined_data = np.vstack([data_total, fcst_total])
-    
+
     # Select canton to plot (prefer CH, otherwise first)
     if "CH" in cantons:
         idx = cantons.index("CH")
     else:
         idx = 0
     canton_name = cantons[idx]
-    
+
     # Create plot
     fig, ax = plt.subplots(figsize=(12, 6))
-    
+
     # Determine x-axis positions
     n_hist = len(periods)
     n_fcst = len(future_periods)
     x_hist = np.arange(n_hist)
     x_fcst = np.arange(n_hist, n_hist + n_fcst)
-    
+
     # Historical data
     ax.plot(
         x_hist,
         data_total[:, idx],
-        'o-',
+        "o-",
         label=f"{canton_name} (Historical)",
-        color='steelblue',
+        color="steelblue",
         linewidth=2,
         markersize=4,
     )
-    
+
     # Forecast data
     ax.plot(
         x_fcst,
         fcst_total[:, idx],
-        's--',
+        "s--",
         label=f"{canton_name} (Forecast)",
-        color='coral',
+        color="coral",
         linewidth=2,
         markersize=5,
     )
-    
+
     # Connect last historical point to first forecast point
     ax.plot(
         [x_hist[-1], x_fcst[0]],
         [data_total[-1, idx], fcst_total[0, idx]],
-        linestyle='--',
-        color='coral',
+        linestyle="--",
+        color="coral",
         linewidth=2,
         alpha=0.8,
         label="_nolegend_",
@@ -323,54 +334,54 @@ def plot_forecasts(
     # Add vertical line at forecast start
     ax.axvline(
         x=n_hist - 0.5,
-        color='gray',
-        linestyle=':',
+        color="gray",
+        linestyle=":",
         alpha=0.5,
         linewidth=1.5,
     )
-    
+
     # Add text annotation
     ax.text(
         n_hist - 0.5,
         ax.get_ylim()[1] * 0.95,
-        'Forecast Start',
+        "Forecast Start",
         rotation=90,
-        verticalalignment='top',
-        horizontalalignment='right',
-        color='gray',
+        verticalalignment="top",
+        horizontalalignment="right",
+        color="gray",
         fontsize=9,
     )
-    
+
     # Formatting
     # Show every 4th period label (yearly)
     tick_positions = np.arange(0, len(combined_periods), 4)
     tick_labels = [combined_periods[i] for i in tick_positions]
     ax.set_xticks(tick_positions)
-    ax.set_xticklabels(tick_labels, rotation=45, ha='right')
-    
+    ax.set_xticklabels(tick_labels, rotation=45, ha="right")
+
     ax.set_xlabel("Period", fontsize=11)
     ax.set_ylabel("Cost (thousands CHF)", fontsize=11)
     ax.set_title(
         f"Health Costs Forecast - {canton_name} ({cost_group})",
         fontsize=13,
-        fontweight='bold'
+        fontweight="bold",
     )
-    ax.legend(loc='best', fontsize=10)
-    ax.grid(True, alpha=0.3, linestyle='--')
-    
+    ax.legend(loc="best", fontsize=10)
+    ax.grid(True, alpha=0.3, linestyle="--")
+
     plt.tight_layout()
-    
+
     # Save
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"\n📊 Plot saved to {output_path}")
 
 
 def compute_yearly_ch_totals_with_forecast(
     periods: list[str],
-    data_total: np.ndarray,      # (T, cantons)
+    data_total: np.ndarray,  # (T, cantons)
     future_periods: list[str],
-    fcst_total: np.ndarray,      # (steps, cantons)
+    fcst_total: np.ndarray,  # (steps, cantons)
     cantons: list[str],
 ) -> dict[str, float]:
     """

@@ -52,10 +52,10 @@ def fit_dmfm(
     verbose=False,
 ):
     """Convenience function to fit DMFM in one call.
-    
+
     This function creates a model, initializes it, and runs EM estimation
     in a single step. For more control, use the individual classes.
-    
+
     Parameters
     ----------
     Y : np.ndarray
@@ -76,14 +76,14 @@ def fit_dmfm(
         Convergence tolerance.
     verbose : bool, default False
         Whether to print progress.
-        
+
     Returns
     -------
     model : DMFMModel
         Fitted model.
     result : EMResult
         EM fitting results.
-        
+
     Examples
     --------
     >>> from KPOKPCH.DMFM import fit_dmfm
@@ -92,11 +92,11 @@ def fit_dmfm(
     >>> print(f"Converged: {result.converged}")
     """
     import numpy as np
-    
+
     # Infer dimensions
     Y = np.asarray(Y)
     T, p1, p2 = Y.shape
-    
+
     # Create model
     config = DMFMConfig(
         p1=p1,
@@ -107,13 +107,13 @@ def fit_dmfm(
         diagonal_idiosyncratic=diagonal_idiosyncratic,
     )
     model = DMFMModel(config)
-    
+
     # Initialize
     model.initialize(Y, mask=mask, method=init_method)
-    
+
     # Fit
     em_config = EMConfig(max_iter=max_iter, tol=tol, verbose=verbose)
     estimator = EMEstimatorDMFM(model, em_config)
     result = estimator.fit(Y, mask=mask)
-    
+
     return model, result
