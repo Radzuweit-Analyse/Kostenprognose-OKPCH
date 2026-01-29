@@ -7,8 +7,8 @@ error metrics.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List
+from dataclasses import dataclass, field
+from typing import Callable, List
 import numpy as np
 
 from .forecast import forecast_dmfm, ForecastConfig
@@ -74,6 +74,9 @@ class ValidationResult:
         Forecast errors (forecasts - actuals).
     config : ValidationConfig
         Validation configuration used.
+    forecast_config : ForecastConfig or None
+        Forecast configuration used for this window (useful when config_selector
+        is used to select parameters dynamically).
     """
 
     rmse: float
@@ -84,6 +87,7 @@ class ValidationResult:
     actuals: np.ndarray
     errors: np.ndarray
     config: ValidationConfig
+    forecast_config: ForecastConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +215,9 @@ def out_of_sample_validate(
     val_config: ValidationConfig,
     forecast_config: ForecastConfig | None = None,
     mask: np.ndarray | None = None,
+    config_selector: (
+        Callable[[np.ndarray, np.ndarray | None], ForecastConfig] | None
+    ) = None,
 ) -> ValidationResult:
     """Perform out-of-sample validation for DMFM forecast.
 
@@ -225,9 +232,12 @@ def out_of_sample_validate(
     val_config : ValidationConfig
         Validation configuration.
     forecast_config : ForecastConfig, optional
-        Forecast model configuration.
+        Forecast model configuration. Used when config_selector is None.
     mask : np.ndarray, optional
         Boolean mask for missing values (True = observed).
+    config_selector : callable, optional
+        Function that takes (Y_train, mask_train) and returns a ForecastConfig.
+        When provided, this is called to dynamically select model parameters.
 
     Returns
     -------
@@ -263,11 +273,17 @@ def out_of_sample_validate(
     Y_test = Y[-steps:]
     mask_train = mask[:-steps] if mask is not None else None
 
+    # Get forecast config (either fixed or dynamically selected)
+    if config_selector is not None:
+        used_config = config_selector(Y_train, mask_train)
+    else:
+        used_config = forecast_config
+
     # Generate forecast
     result = forecast_dmfm(
         Y_train,
         steps,
-        config=forecast_config,
+        config=used_config,
         mask=mask_train,
     )
 
@@ -287,6 +303,7 @@ def out_of_sample_validate(
         actuals=actuals,
         errors=errors,
         config=val_config,
+        forecast_config=used_config,
     )
 
 
@@ -295,6 +312,9 @@ def rolling_window_validate(
     val_config: ValidationConfig,
     forecast_config: ForecastConfig | None = None,
     mask: np.ndarray | None = None,
+    config_selector: (
+        Callable[[np.ndarray, np.ndarray | None], ForecastConfig] | None
+    ) = None,
 ) -> List[ValidationResult]:
     """Perform rolling window out-of-sample validation.
 
@@ -308,14 +328,20 @@ def rolling_window_validate(
     val_config : ValidationConfig
         Validation configuration specifying window type and size.
     forecast_config : ForecastConfig, optional
-        Forecast model configuration.
+        Forecast model configuration. Used when config_selector is None.
     mask : np.ndarray, optional
         Boolean mask for missing values.
+    config_selector : callable, optional
+        Function that takes (Y_train, mask_train) and returns a ForecastConfig.
+        When provided, this is called for each validation window to dynamically
+        select model parameters (e.g., using BIC for rank selection).
+        Signature: config_selector(Y_train: np.ndarray, mask_train: np.ndarray | None) -> ForecastConfig
 
     Returns
     -------
     list[ValidationResult]
-        List of validation results, one per window.
+        List of validation results, one per window. Each result includes
+        the forecast_config used for that window.
 
     Raises
     ------
@@ -324,6 +350,7 @@ def rolling_window_validate(
 
     Examples
     --------
+    >>> # Fixed config
     >>> val_config = ValidationConfig(
     ...     steps=4,
     ...     window_type="rolling",
@@ -333,6 +360,14 @@ def rolling_window_validate(
     >>> results = rolling_window_validate(Y, val_config)
     >>> avg_rmse = np.mean([r.rmse for r in results])
     >>> print(f"Average RMSE: {avg_rmse:.2f}")
+
+    >>> # Dynamic config selection using BIC
+    >>> def select_config(Y_train, mask_train):
+    ...     from KPOKPCH.DMFM import select_rank
+    ...     Y_diff = np.diff(Y_train, n=4, axis=0)
+    ...     result = select_rank(Y_diff, k1_range=(1,2), k2_range=(1,6), criterion="bic")
+    ...     return ForecastConfig(k1=result.best_k1, k2=result.best_k2, P=1, seasonal_period=4)
+    >>> results = rolling_window_validate(Y, val_config, config_selector=select_config)
     """
     Y = np.asarray(Y, dtype=float)
     if Y.ndim != 3:
@@ -371,11 +406,17 @@ def rolling_window_validate(
         Y_test = Y[train_end : train_end + steps]
         mask_train = mask[train_start:train_end] if mask is not None else None
 
+        # Get forecast config (either fixed or dynamically selected)
+        if config_selector is not None:
+            window_config = config_selector(Y_train, mask_train)
+        else:
+            window_config = forecast_config
+
         # Generate forecast
         fcst_result = forecast_dmfm(
             Y_train,
             steps,
-            config=forecast_config,
+            config=window_config,
             mask=mask_train,
         )
 
@@ -396,6 +437,7 @@ def rolling_window_validate(
                 actuals=actuals,
                 errors=errors,
                 config=val_config,
+                forecast_config=window_config,
             )
         )
 
