@@ -312,7 +312,13 @@ class EMEstimatorDMFM:
         for t in range(F.shape[0]):
             F[t] = R_fac @ F[t] @ C_fac.T
 
-        # Update dynamics
+        # Check if we're in I(1) mode (skip dynamics and drift updates)
+        is_i1 = self.model.dynamics is not None and self.model.dynamics.i1_factors
+        is_kronecker = (
+            self.model.dynamics is not None and self.model.dynamics.kronecker_only
+        )
+
+        # Update dynamics (skipped for I(1) factors per Barigozzi & Trapin Section 6)
         A_new, B_new, Phi_new = _update_dynamics(
             F,
             self.model.A,
@@ -320,12 +326,12 @@ class EMEstimatorDMFM:
             self.model.P,
             self.model.k1,
             self.model.k2,
-            self.model.dynamics is not None and self.model.dynamics.nonstationary,
-            self.model.dynamics is not None and self.model.dynamics.kronecker_only,
+            is_i1,
+            is_kronecker,
         )
 
-        # Update drift
-        C_drift_new = _update_drift(F, A_new, B_new, self.model.P)
+        # Update drift (skipped for I(1) factors - random walk has no drift)
+        C_drift_new = _update_drift(F, A_new, B_new, self.model.P, skip=is_i1)
 
         # Update innovations
         P_new, Q_new = _update_innovations(
@@ -335,8 +341,8 @@ class EMEstimatorDMFM:
             A_new,
             B_new,
             Phi_new,
-            self.model.dynamics is not None and self.model.dynamics.i1_factors,
-            self.model.dynamics is not None and self.model.dynamics.kronecker_only,
+            is_i1,
+            is_kronecker,
         )
 
         # Update idiosyncratic covariances
@@ -641,7 +647,9 @@ def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
     return A_new, B_new, Phi_new
 
 
-def _update_drift(F: np.ndarray, A: list, B: list, P: int) -> np.ndarray:
+def _update_drift(
+    F: np.ndarray, A: list, B: list, P: int, skip: bool = False
+) -> np.ndarray:
     """Estimate drift matrix from smoothed factors.
 
     The drift C is estimated as the mean residual:
@@ -657,6 +665,9 @@ def _update_drift(F: np.ndarray, A: list, B: list, P: int) -> np.ndarray:
         Column transition matrices.
     P : int
         MAR order.
+    skip : bool, default False
+        If True, return zeros (used for I(1) factors where random walk
+        has no drift per Barigozzi & Trapin 2025 Section 6).
 
     Returns
     -------
@@ -664,6 +675,10 @@ def _update_drift(F: np.ndarray, A: list, B: list, P: int) -> np.ndarray:
         Estimated drift matrix of shape (k1, k2).
     """
     Tn, k1, k2 = F.shape
+
+    # For I(1) factors, random walk has no drift
+    if skip:
+        return np.zeros((k1, k2))
 
     # Compute residuals
     residuals = []

@@ -50,6 +50,7 @@ def fit_dmfm(
     max_iter=100,
     tol=1e-4,
     verbose=False,
+    i1_factors=False,
 ):
     """Convenience function to fit DMFM in one call.
 
@@ -76,6 +77,13 @@ def fit_dmfm(
         Convergence tolerance.
     verbose : bool, default False
         Whether to print progress.
+    i1_factors : bool, default False
+        Whether factors are integrated of order 1 (I(1) / random walk).
+        When True, implements Barigozzi & Trapin (2025) Section 6:
+        - Dynamics A, B are fixed at identity (random walk)
+        - No drift is estimated
+        - Estimation is done in levels (no differencing needed)
+        This is useful for data with stochastic trends.
 
     Returns
     -------
@@ -90,6 +98,9 @@ def fit_dmfm(
     >>> model, result = fit_dmfm(Y, k1=3, k2=2, verbose=True)
     >>> factors = model.F
     >>> print(f"Converged: {result.converged}")
+
+    >>> # For non-stationary data with stochastic trends
+    >>> model, result = fit_dmfm(Y, k1=2, k2=2, i1_factors=True)
     """
     import numpy as np
 
@@ -110,6 +121,10 @@ def fit_dmfm(
 
     # Initialize
     model.initialize(Y, mask=mask, method=init_method)
+
+    # Set I(1) factors flag if requested
+    if i1_factors:
+        model.dynamics.i1_factors = True
 
     # Fit
     em_config = EMConfig(max_iter=max_iter, tol=tol, verbose=verbose)

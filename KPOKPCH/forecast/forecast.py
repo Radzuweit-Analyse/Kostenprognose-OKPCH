@@ -41,6 +41,15 @@ class ForecastConfig:
         Initialization method ("svd" or "pe").
     verbose : bool, default False
         Whether to print fitting progress.
+    i1_factors : bool, default False
+        Whether factors are integrated of order 1 (I(1) / random walk).
+        Per Barigozzi & Trapin (2025) Section 6, when True:
+        - Dynamics A, B are fixed at identity
+        - No drift is estimated
+        - Data is estimated in levels (no differencing)
+        Note: This is different from seasonal_period differencing.
+        You can use seasonal_period for seasonal adjustment while
+        i1_factors handles stochastic trends.
     """
 
     k1: int = 1
@@ -52,6 +61,7 @@ class ForecastConfig:
     diagonal_idiosyncratic: bool = False
     init_method: str = "svd"
     verbose: bool = False
+    i1_factors: bool = False
 
 
 @dataclass
@@ -468,6 +478,7 @@ def forecast_dmfm(
         max_iter=config.max_iter,
         tol=config.tol,
         verbose=config.verbose,
+        i1_factors=config.i1_factors,
     )
 
     # Generate forecasts by iterating dynamics

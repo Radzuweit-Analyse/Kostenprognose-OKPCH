@@ -18,18 +18,25 @@ class DynamicsConfig:
         Regularization parameter for pseudo-inverse computation.
     min_denominator_norm : float, default 1e-8
         Minimum norm for denominator matrices to avoid division issues.
-    nonstationary : bool, default False
-        Whether factors follow I(1) dynamics (random walk).
     kronecker_only : bool, default False
         Whether to estimate dynamics in vectorized Kronecker form only.
     i1_factors : bool, default False
-        Whether factors are integrated of order 1.
+        Whether factors are integrated of order 1 (I(1)).
+        When True, implements Barigozzi & Trapin (2025) Section 6:
+        - Dynamics A, B are fixed at identity (random walk)
+        - No drift is estimated
+        - Kalman filter uses diffuse initial state
+        - Estimation is done in levels (no differencing needed)
+
+    Notes
+    -----
+    The `nonstationary` attribute is kept as an alias for `i1_factors`
+    for backward compatibility but `i1_factors` is the preferred name.
     """
 
     stability_threshold: float = 0.99
     regularization: float = 1e-8
     min_denominator_norm: float = 1e-8
-    nonstationary: bool = False
     kronecker_only: bool = False
     i1_factors: bool = False
 
@@ -43,6 +50,16 @@ class DynamicsConfig:
             raise ValueError(
                 f"regularization must be non-negative, got {self.regularization}"
             )
+
+    @property
+    def nonstationary(self) -> bool:
+        """Alias for i1_factors (deprecated, use i1_factors instead)."""
+        return self.i1_factors
+
+    @nonstationary.setter
+    def nonstationary(self, value: bool) -> None:
+        """Set i1_factors via nonstationary alias."""
+        self.i1_factors = value
 
 
 class DMFMDynamics:
@@ -182,14 +199,24 @@ class DMFMDynamics:
     # ------------------------------------------------------------------
 
     @property
+    def i1_factors(self) -> bool:
+        """Whether factors are integrated of order 1 (I(1) / random walk)."""
+        return self.config.i1_factors
+
+    @i1_factors.setter
+    def i1_factors(self, value: bool) -> None:
+        """Set i1_factors flag."""
+        self.config.i1_factors = value
+
+    @property
     def nonstationary(self) -> bool:
-        """Whether dynamics are nonstationary (I(1) factors)."""
-        return self.config.nonstationary
+        """Alias for i1_factors (deprecated)."""
+        return self.config.i1_factors
 
     @nonstationary.setter
     def nonstationary(self, value: bool) -> None:
-        """Set nonstationary flag."""
-        self.config.nonstationary = value
+        """Set i1_factors via nonstationary alias."""
+        self.config.i1_factors = value
 
     @property
     def kronecker_only(self) -> bool:
@@ -200,16 +227,6 @@ class DMFMDynamics:
     def kronecker_only(self, value: bool) -> None:
         """Set kronecker_only flag."""
         self.config.kronecker_only = value
-
-    @property
-    def i1_factors(self) -> bool:
-        """Whether factors are integrated of order 1."""
-        return self.config.i1_factors
-
-    @i1_factors.setter
-    def i1_factors(self, value: bool) -> None:
-        """Set i1_factors flag."""
-        self.config.i1_factors = value
 
     # ------------------------------------------------------------------
     # Forward simulation
