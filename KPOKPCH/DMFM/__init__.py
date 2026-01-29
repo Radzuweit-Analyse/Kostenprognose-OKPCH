@@ -10,6 +10,14 @@ from .utils import (
     InitMethod,
     InitializationResult,
 )
+from .selection import (
+    select_rank,
+    compute_information_criteria,
+    count_parameters,
+    print_selection_summary,
+    ModelSelectionResult,
+    InformationCriteria,
+)
 
 __all__ = [
     # Model
@@ -33,6 +41,13 @@ __all__ = [
     "init_dynamics",
     "InitMethod",
     "InitializationResult",
+    # Model selection
+    "select_rank",
+    "compute_information_criteria",
+    "count_parameters",
+    "print_selection_summary",
+    "ModelSelectionResult",
+    "InformationCriteria",
     # Convenience
     "fit_dmfm",
 ]

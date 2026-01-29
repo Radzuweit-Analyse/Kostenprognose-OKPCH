@@ -1,5 +1,6 @@
 """Forecast Swiss health costs using DMFM."""
 
+import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
@@ -10,12 +11,55 @@ from KPOKPCH.forecast import (
     ForecastConfig,
     forecast_dmfm,
 )
+from KPOKPCH.DMFM import select_rank, print_selection_summary
 
 VERBOSE = False
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Forecast Swiss health costs using DMFM")
+    parser.add_argument(
+        "--select-rank",
+        action="store_true",
+        help="Automatically select optimal k1, k2 using BIC (slower but may improve fit)",
+    )
+    parser.add_argument(
+        "--k1-range",
+        type=str,
+        default="1,2",
+        help="Range of k1 values to search (e.g., '1,4' for k1 in [1,4])",
+    )
+    parser.add_argument(
+        "--k2-range",
+        type=str,
+        default="4,8",
+        help="Range of k2 values to search (e.g., '1,4' for k2 in [1,4])",
+    )
+    parser.add_argument(
+        "--k1",
+        type=int,
+        default=1,
+        help="Number of row factors (default: 1, ignored if --select-rank)",
+    )
+    parser.add_argument(
+        "--k2",
+        type=int,
+        default=4,
+        help="Number of column factors (default: 4, ignored if --select-rank)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print verbose output during fitting",
+    )
+    return parser.parse_args()
+
+
 def main():
     """Run health cost forecasting."""
+    args = parse_args()
+
     # Load data
     csv_path = Path(__file__).resolve().parent / "health_costs_tensor.csv"
     loaded = load_cost_matrix(str(csv_path))
@@ -64,14 +108,50 @@ def main():
     print(f"   Cost groups: {len(groups_forecast)}")
     print(f"   Using MAR specification to forecast all dimensions simultaneously")
 
+    # Determine k1, k2 - either via automatic selection or command-line args
+    verbose = args.verbose or VERBOSE
+
+    if args.select_rank:
+        # Parse range arguments
+        k1_min, k1_max = map(int, args.k1_range.split(","))
+        k2_min, k2_max = map(int, args.k2_range.split(","))
+
+        print(f"\n🔍 Selecting optimal rank (k1, k2) via BIC...")
+        print(f"   k1 range: [{k1_min}, {k1_max}]")
+        print(f"   k2 range: [{k2_min}, {k2_max}]")
+
+        # Apply seasonal differencing before rank selection (same as forecast will do)
+        Y_diff = np.diff(Y_forecast, n=4, axis=0)
+        mask_diff = ~np.isnan(Y_diff)
+
+        selection_result = select_rank(
+            Y_diff,
+            k1_range=(k1_min, k1_max),
+            k2_range=(k2_min, k2_max),
+            P=1,
+            criterion="bic",
+            mask=mask_diff,
+            diagonal_idiosyncratic=True,
+            max_iter=50,  # Fewer iterations for selection
+            verbose=verbose,
+        )
+
+        print_selection_summary(selection_result)
+
+        k1, k2 = selection_result.best_k1, selection_result.best_k2
+        print(f"\n   Selected: k1={k1}, k2={k2} (BIC={selection_result.best_value:.2f})")
+    else:
+        k1, k2 = args.k1, args.k2
+        print(f"   Using fixed rank: k1={k1}, k2={k2}")
+
     # Forecast using MAR specification (Barigozzi & Trapin 2025)
     config = ForecastConfig(
-        k1=2,
-        k2=2,
+        k1=k1,
+        k2=k2,
         P=1,
         seasonal_period=4,
         max_iter=100,
-        verbose=VERBOSE,
+        verbose=verbose,
     )
 
     steps = 9  # Two years ahead

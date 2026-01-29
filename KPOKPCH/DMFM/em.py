@@ -647,9 +647,7 @@ def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
     return A_new, B_new, Phi_new
 
 
-def _enforce_stability_spectral(
-    mat: np.ndarray, threshold: float = 0.99
-) -> np.ndarray:
+def _enforce_stability_spectral(mat: np.ndarray, threshold: float = 0.99) -> np.ndarray:
     """Enforce stability via spectral radius constraint.
 
     For MAR dynamics Φ = B ⊗ A, eigenvalues are products λ_i(A) · μ_j(B).
