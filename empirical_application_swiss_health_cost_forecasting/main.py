@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument(
         "--k2-range",
         type=str,
-        default="4,8",
+        default="2,8",
         help="Range of k2 values to search (e.g., '1,4')",
     )
     parser.add_argument(
