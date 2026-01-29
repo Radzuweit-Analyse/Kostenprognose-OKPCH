@@ -51,12 +51,3 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
-
-# Data files (uncomment if you want to exclude data)
-# *.csv
-# *.xlsx
-# *.parquet
-
-# Output files
-*.pdf
-*.png
