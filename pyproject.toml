@@ -5,23 +5,30 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "KPOKPCH"
 version = "0.0.1"
-dynamic = ["dependencies"]
 description = "Dynamic Matrix Factor Model utilities"
 readme = "README.md"
-authors = [{name = "OKP Team"}]
+authors = [{name = "Raphaël Radzuweit"}]
 license = {file = "LICENSE"}
 requires-python = ">=3.14"
+dependencies = [
+  "matplotlib>=3.10.8",
+  "numpy>=2.4.1",
+  "pandas>=3.0.0",
+  "scipy>=1.17.0",
+]
 
 [project.optional-dependencies]
 publish = ["twine"]
-
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
 packages = ["KPOKPCH.DMFM", "KPOKPCH.forecast"]
 
 [tool.black]
 line-length = 88
-target-version = ["py312"]
+target-version = ["py314"]
 skip-string-normalization = false
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+]
