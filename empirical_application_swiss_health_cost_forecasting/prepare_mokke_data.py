@@ -1,11 +1,14 @@
 import pandas as pd
 from pathlib import Path
 
+INPUT_FILE = "02_Monitoring-des-couts_Serie-temporelle-trimestre.xlsx"
+OUTPUT_FILE = "health_costs_tensor.csv"
+
 
 def main() -> None:
     """Prepare health cost tensor data from Excel source."""
     base_dir = Path(__file__).resolve().parent
-    file_path = base_dir / "02_Monitoring-des-couts_Serie-temporelle-trimestre.xlsx"
+    file_path = base_dir / INPUT_FILE
 
     if not file_path.exists():
         raise FileNotFoundError(f"Data file not found: {file_path}")
@@ -27,7 +30,7 @@ def main() -> None:
     # Handle period format
     if pd.api.types.is_datetime64_any_dtype(df["Periode"]):
         df["Periode"] = pd.PeriodIndex(df["Periode"], freq="Q").astype(str)
-        print(f"  Converted periods to quarterly format")
+        print("  Converted periods to quarterly format")
 
     # Convert values to numeric
     df = df[pd.to_numeric(df["Prestations_brutes_par_assure"], errors="coerce").notna()]
@@ -45,7 +48,7 @@ def main() -> None:
         )
     ]
 
-    print(f"\n📋 Data summary:")
+    print("\nData summary:")
     print(f"   Detail cost groups: {df_model['Groupe_de_couts'].nunique()}")
     print(f"   Cantons: {df_model['Canton_ISO2'].nunique()}")
     print(f"   Periods: {df_model['Periode'].nunique()}")
@@ -59,7 +62,7 @@ def main() -> None:
     )
     if duplicates.any():
         print(
-            f"   ⚠️  Warning: {duplicates.sum()} duplicate rows found and will be handled"
+            f"   Warning: {duplicates.sum()} duplicate rows found and will be handled"
         )
 
     # Pivot into tensor format
@@ -78,19 +81,19 @@ def main() -> None:
     tensor_df.columns = [f"{canton}|{group}" for canton, group in tensor_df.columns]
 
     # Data quality report
-    print(f"\n📊 Output tensor:")
-    print(f"   Shape: {tensor_df.shape[0]} periods × {tensor_df.shape[1]} series")
+    print("\nOutput tensor:")
+    print(f"   Shape: {tensor_df.shape[0]} periods x {tensor_df.shape[1]} series")
     n_missing = tensor_df.isna().sum().sum()
     pct_missing = 100 * tensor_df.isna().mean().mean()
     print(f"   Missing values: {n_missing} ({pct_missing:.1f}%)")
 
     # Save
-    output_path = base_dir / "health_costs_tensor.csv"
+    output_path = base_dir / OUTPUT_FILE
     tensor_df.to_csv(output_path, index_label="Periode")
-    print(f"\n✅ Saved to '{output_path.name}'")
+    print(f"\nSaved to '{output_path.name}'")
 
     # Show sample
-    print(f"\n📝 Sample data (first 3 periods, first 3 series):")
+    print("\nSample data (first 3 periods, first 3 series):")
     print(tensor_df.iloc[:3, :3])
 
 
