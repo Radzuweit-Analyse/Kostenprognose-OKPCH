@@ -641,10 +641,43 @@ def _update_dynamics(F, A, B, Pord, k1, k2, nonstationary, kronecker_only):
             A_est = A[ell]
         if np.linalg.norm(B_den) < 1e-4:
             B_est = B[ell]
-        A_new[ell] = np.clip(A_est, -0.99, 0.99)
-        B_new[ell] = np.clip(B_est, -0.99, 0.99)
+        A_new[ell] = _enforce_stability_spectral(A_est, threshold=0.99)
+        B_new[ell] = _enforce_stability_spectral(B_est, threshold=0.99)
     Phi_new = [np.kron(B_new[l], A_new[l]) for l in range(Pord)]
     return A_new, B_new, Phi_new
+
+
+def _enforce_stability_spectral(
+    mat: np.ndarray, threshold: float = 0.99
+) -> np.ndarray:
+    """Enforce stability via spectral radius constraint.
+
+    For MAR dynamics Φ = B ⊗ A, eigenvalues are products λ_i(A) · μ_j(B).
+    To ensure ρ(Φ) < threshold, we enforce ρ(A), ρ(B) ≤ √threshold.
+
+    Parameters
+    ----------
+    mat : np.ndarray
+        Transition matrix to stabilize.
+    threshold : float, default 0.99
+        Maximum allowed spectral radius for the Kronecker product.
+
+    Returns
+    -------
+    np.ndarray
+        Stabilized matrix with spectral radius ≤ √threshold.
+    """
+    target_radius = np.sqrt(threshold)
+
+    eigenvalues = np.linalg.eigvals(mat)
+    spectral_radius = np.max(np.abs(eigenvalues))
+
+    if spectral_radius <= target_radius or spectral_radius < 1e-10:
+        return mat
+
+    # Scale matrix uniformly
+    scale_factor = target_radius / spectral_radius
+    return mat * scale_factor
 
 
 def _update_drift(

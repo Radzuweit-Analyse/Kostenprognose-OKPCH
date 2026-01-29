@@ -399,7 +399,13 @@ class DMFMDynamics:
         self.B = B_new
 
     def _enforce_stability(self, mat: np.ndarray) -> np.ndarray:
-        """Enforce stability by clipping element-wise.
+        """Enforce stability via spectral radius constraint.
+
+        For MAR dynamics Φ = B ⊗ A, eigenvalues are products λ_i(A) · μ_j(B).
+        To ensure |λ_i · μ_j| < threshold for all i,j, we enforce:
+            ρ(A) ≤ √threshold  and  ρ(B) ≤ √threshold
+
+        This method scales the matrix to have spectral radius ≤ √threshold.
 
         Parameters
         ----------
@@ -409,15 +415,30 @@ class DMFMDynamics:
         Returns
         -------
         np.ndarray
-            Stabilized matrix with entries in [-threshold, threshold].
+            Stabilized matrix with spectral radius ≤ √threshold.
 
         Notes
         -----
-        This is a simple approach. More sophisticated methods would
-        clip eigenvalues or use constrained optimization.
+        Uses uniform scaling: A_new = A * (target_radius / current_radius).
+        This preserves eigenvector structure while constraining eigenvalues.
+        For the Kronecker product Φ = B ⊗ A, if both A and B have spectral
+        radius ≤ √threshold, then ρ(Φ) ≤ threshold.
         """
-        threshold = self.config.stability_threshold
-        return np.clip(mat, -threshold, threshold)
+        # Target radius for individual A, B matrices
+        # Since ρ(B ⊗ A) = ρ(A) · ρ(B), we need ρ(A), ρ(B) ≤ √threshold
+        target_radius = np.sqrt(self.config.stability_threshold)
+
+        # Compute eigenvalues
+        eigenvalues = np.linalg.eigvals(mat)
+        spectral_radius = np.max(np.abs(eigenvalues))
+
+        if spectral_radius <= target_radius:
+            return mat
+
+        # Scale matrix uniformly to achieve target spectral radius
+        # A_new = A * (target / ρ(A)) has ρ(A_new) = target
+        scale_factor = target_radius / spectral_radius
+        return mat * scale_factor
 
     # ------------------------------------------------------------------
     # Utilities
