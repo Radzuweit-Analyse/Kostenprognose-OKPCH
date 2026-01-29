@@ -253,6 +253,7 @@ class EMEstimatorDMFM:
         shock_effects: Optional["ShockEffects"] = None
         if shock_schedule is not None and shock_schedule.n_shocks > 0:
             from .shocks import ShockEffects
+
             # Initialize with zeros (or fixed effects where specified)
             n_f = shock_schedule.n_factor_shocks
             n_o = shock_schedule.n_observation_shocks
@@ -303,11 +304,16 @@ class EMEstimatorDMFM:
             # Update shock effects first (if applicable)
             if shock_schedule is not None and shock_effects is not None:
                 from .shocks import estimate_shock_effects
+
                 shock_effects = estimate_shock_effects(
-                    Y, F,
-                    self.model.R, self.model.C,
-                    self.model.A, self.model.B,
-                    shock_schedule, mask,
+                    Y,
+                    F,
+                    self.model.R,
+                    self.model.C,
+                    self.model.A,
+                    self.model.B,
+                    shock_schedule,
+                    mask,
                 )
 
             # Update all model parameters
@@ -326,7 +332,9 @@ class EMEstimatorDMFM:
             self.model._F = kf_eval.extract_factors(state_eval, smoothed=True)
 
             # Compute log-likelihood
-            ll = kf_eval.log_likelihood(Y, mask, state_eval, shock_schedule, shock_effects)
+            ll = kf_eval.log_likelihood(
+                Y, mask, state_eval, shock_schedule, shock_effects
+            )
 
             # Compute parameter difference
             diff = _compute_param_diff(
@@ -340,9 +348,7 @@ class EMEstimatorDMFM:
             # Check for log-likelihood decrease
             if self.config.check_loglik_increase and it > 0 and (ll - last_ll) < -1e-6:
                 if self.config.verbose:
-                    print(
-                        f"⚠️  Warning: Log-likelihood decreased at iteration {it + 1}"
-                    )
+                    print(f"Warning: Log-likelihood decreased at iteration {it + 1}")
                     print(f"    Previous: {last_ll:.6f}, Current: {ll:.6f}")
 
                 # Revert to previous parameters
@@ -373,14 +379,14 @@ class EMEstimatorDMFM:
             # Check convergence
             if diff < self.config.tol:
                 if self.config.verbose:
-                    print(f"✓ Converged at iteration {it + 1} (diff={diff:.2e})")
+                    print(f"Converged at iteration {it + 1} (diff={diff:.2e})")
                 break
 
             last_ll = ll
 
         else:
             if self.config.verbose:
-                print(f"⚠️  Maximum iterations ({self.config.max_iter}) reached")
+                print(f"Maximum iterations ({self.config.max_iter}) reached")
 
         # Mark model as fitted
         self.model._is_fitted = True

@@ -22,7 +22,6 @@ from KPOKPCH.DMFM import (
     fit_dmfm,
 )
 
-
 # ---------------------------------------------------------------------------
 # Shock tests
 # ---------------------------------------------------------------------------
@@ -242,10 +241,12 @@ class TestShockSchedule:
 
     def test_remove_shock(self):
         """Test removing shock from schedule."""
-        schedule = ShockSchedule([
-            Shock(name="s1", start_t=0),
-            Shock(name="s2", start_t=5),
-        ])
+        schedule = ShockSchedule(
+            [
+                Shock(name="s1", start_t=0),
+                Shock(name="s2", start_t=5),
+            ]
+        )
         schedule.remove("s1")
         assert len(schedule) == 1
         assert schedule.get("s1") is None
@@ -260,21 +261,30 @@ class TestShockSchedule:
 
     def test_factor_and_observation_shocks(self):
         """Test separating factor and observation shocks."""
-        schedule = ShockSchedule([
-            Shock(name="f1", start_t=0, level=ShockLevel.FACTOR),
-            Shock(name="f2", start_t=5, level=ShockLevel.FACTOR),
-            Shock(name="o1", start_t=10, level=ShockLevel.OBSERVATION,
-                  scope=ShockScope.CATEGORY, categories=[0]),
-        ])
+        schedule = ShockSchedule(
+            [
+                Shock(name="f1", start_t=0, level=ShockLevel.FACTOR),
+                Shock(name="f2", start_t=5, level=ShockLevel.FACTOR),
+                Shock(
+                    name="o1",
+                    start_t=10,
+                    level=ShockLevel.OBSERVATION,
+                    scope=ShockScope.CATEGORY,
+                    categories=[0],
+                ),
+            ]
+        )
         assert schedule.n_factor_shocks == 2
         assert schedule.n_observation_shocks == 1
 
     def test_build_design_matrix(self):
         """Test building design matrix."""
-        schedule = ShockSchedule([
-            Shock(name="s1", start_t=2, end_t=4),
-            Shock(name="s2", start_t=6, end_t=8),
-        ])
+        schedule = ShockSchedule(
+            [
+                Shock(name="s1", start_t=2, end_t=4),
+                Shock(name="s2", start_t=6, end_t=8),
+            ]
+        )
         X = schedule.build_design_matrix(T=10)
 
         assert X.shape == (10, 2)
@@ -291,24 +301,32 @@ class TestShockSchedule:
 
     def test_build_factor_design_matrix(self):
         """Test building design matrix for factor shocks only."""
-        schedule = ShockSchedule([
-            Shock(name="f", start_t=0, end_t=2, level=ShockLevel.FACTOR),
-            Shock(name="o", start_t=0, end_t=2, level=ShockLevel.OBSERVATION,
-                  scope=ShockScope.CATEGORY, categories=[0]),
-        ])
+        schedule = ShockSchedule(
+            [
+                Shock(name="f", start_t=0, end_t=2, level=ShockLevel.FACTOR),
+                Shock(
+                    name="o",
+                    start_t=0,
+                    end_t=2,
+                    level=ShockLevel.OBSERVATION,
+                    scope=ShockScope.CATEGORY,
+                    categories=[0],
+                ),
+            ]
+        )
         X_f = schedule.build_factor_design_matrix(T=5)
         assert X_f.shape == (5, 1)
 
     def test_extend_to_forecast_horizon(self):
         """Test extending schedule to forecast horizon."""
         # Permanent shock starting at t=5
-        schedule = ShockSchedule([
-            Shock(name="permanent", start_t=5, end_t=None),
-        ])
-
-        X_future, extended = schedule.extend_to_forecast_horizon(
-            T_hist=10, steps=5
+        schedule = ShockSchedule(
+            [
+                Shock(name="permanent", start_t=5, end_t=None),
+            ]
         )
+
+        X_future, extended = schedule.extend_to_forecast_horizon(T_hist=10, steps=5)
 
         assert X_future.shape == (5, 1)
         # Shock started at t=5, so still active in forecast
@@ -336,10 +354,12 @@ class TestShockSchedule:
     def test_unique_names_validation(self):
         """Test that duplicate names are rejected."""
         with pytest.raises(ValueError):
-            ShockSchedule([
-                Shock(name="dup", start_t=0),
-                Shock(name="dup", start_t=5),
-            ])
+            ShockSchedule(
+                [
+                    Shock(name="dup", start_t=0),
+                    Shock(name="dup", start_t=5),
+                ]
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -424,14 +444,16 @@ class TestShockIntegration:
         """Test fitting model with shock schedule."""
         data = synthetic_data_with_shock
 
-        schedule = ShockSchedule([
-            Shock(
-                name="test_shock",
-                start_t=data["shock_start"],
-                end_t=data["shock_end"],
-                level=ShockLevel.FACTOR,
-            )
-        ])
+        schedule = ShockSchedule(
+            [
+                Shock(
+                    name="test_shock",
+                    start_t=data["shock_start"],
+                    end_t=data["shock_end"],
+                    level=ShockLevel.FACTOR,
+                )
+            ]
+        )
 
         model, result = fit_dmfm(
             data["Y"],
@@ -451,20 +473,24 @@ class TestShockIntegration:
         k1, k2 = 2, 2
         F_pred = np.zeros((k1, k2))
 
-        schedule = ShockSchedule([
-            Shock(name="s1", start_t=0, end_t=5),
-        ])
-
-        effects = ShockEffects(
-            factor_effects=np.ones((1, k1, k2)) * 2.0
+        schedule = ShockSchedule(
+            [
+                Shock(name="s1", start_t=0, end_t=5),
+            ]
         )
 
+        effects = ShockEffects(factor_effects=np.ones((1, k1, k2)) * 2.0)
+
         # At t=3, shock is active with intensity 1.0
-        F_adjusted = apply_factor_shocks(F_pred, t=3, schedule=schedule, effects=effects)
+        F_adjusted = apply_factor_shocks(
+            F_pred, t=3, schedule=schedule, effects=effects
+        )
         assert np.allclose(F_adjusted, 2.0)
 
         # At t=10, shock is not active
-        F_adjusted = apply_factor_shocks(F_pred, t=10, schedule=schedule, effects=effects)
+        F_adjusted = apply_factor_shocks(
+            F_pred, t=10, schedule=schedule, effects=effects
+        )
         assert np.allclose(F_adjusted, 0.0)
 
     def test_apply_observation_shocks(self):
@@ -472,16 +498,18 @@ class TestShockIntegration:
         p1, p2 = 5, 3
         Y_pred = np.zeros((p1, p2))
 
-        schedule = ShockSchedule([
-            Shock(
-                name="o1",
-                start_t=0,
-                end_t=5,
-                level=ShockLevel.OBSERVATION,
-                scope=ShockScope.CATEGORY,
-                categories=[1],
-            ),
-        ])
+        schedule = ShockSchedule(
+            [
+                Shock(
+                    name="o1",
+                    start_t=0,
+                    end_t=5,
+                    level=ShockLevel.OBSERVATION,
+                    scope=ShockScope.CATEGORY,
+                    categories=[1],
+                ),
+            ]
+        )
 
         effect = np.zeros((p1, p2))
         effect[:, 1] = 3.0  # Only affects category 1
@@ -490,7 +518,9 @@ class TestShockIntegration:
             observation_effects=effect[np.newaxis, ...]  # Shape (1, p1, p2)
         )
 
-        Y_adjusted = apply_observation_shocks(Y_pred, t=3, schedule=schedule, effects=effects)
+        Y_adjusted = apply_observation_shocks(
+            Y_pred, t=3, schedule=schedule, effects=effects
+        )
         assert np.all(Y_adjusted[:, 1] == 3.0)
         assert np.all(Y_adjusted[:, 0] == 0.0)
         assert np.all(Y_adjusted[:, 2] == 0.0)

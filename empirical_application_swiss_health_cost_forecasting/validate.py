@@ -2,6 +2,10 @@
 
 This script performs comprehensive validation of the DMFM model using
 rolling window validation with automatic rank selection at each window.
+
+Includes time-aware shock handling:
+- COVID-19 shock is only included when training data extends past 2020Q2
+  (cannot predict a shock before it happens)
 """
 
 import argparse
@@ -21,7 +25,9 @@ from KPOKPCH.forecast.validation import (
     rolling_window_validate,
     average_validation_results,
 )
-from KPOKPCH.DMFM import select_rank
+from KPOKPCH.DMFM import select_rank, ShockSchedule
+
+from shocks_config import create_covid_schedule, COVID_START_T
 
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = "health_costs_tensor.csv"
@@ -108,7 +114,9 @@ def make_config_selector(
     """Create a config selector function for dynamic rank selection.
 
     Returns a callable that selects optimal k1, k2 using BIC on seasonal
-    differences of the training data.
+    differences of the training data. Also handles shock schedules in a
+    time-aware manner: COVID-19 shock is only included when the training
+    window extends past 2020Q2.
 
     Parameters
     ----------
@@ -130,8 +138,10 @@ def make_config_selector(
     def config_selector(
         Y_train: np.ndarray, mask_train: np.ndarray | None
     ) -> ForecastConfig:
+        training_end_t = Y_train.shape[0]
+
         # Apply seasonal differencing for rank selection
-        if Y_train.shape[0] <= seasonal_period:
+        if training_end_t <= seasonal_period:
             # Not enough data for seasonal differencing, use defaults
             return ForecastConfig(
                 k1=k1_range[0],
@@ -161,6 +171,13 @@ def make_config_selector(
         if verbose:
             print(f"    Selected k1={result.best_k1}, k2={result.best_k2}")
 
+        # Create shock schedule only if training data includes post-COVID period
+        # COVID started at t=17 (2020Q2), so include if training extends past that
+        shock_schedule = create_covid_schedule(training_end_t)
+
+        if verbose and shock_schedule is not None:
+            print(f"    Including COVID shock (training includes post-2020Q2 data)")
+
         return ForecastConfig(
             k1=result.best_k1,
             k2=result.best_k2,
@@ -168,6 +185,7 @@ def make_config_selector(
             seasonal_period=seasonal_period,
             max_iter=100,
             verbose=verbose,
+            shock_schedule=shock_schedule,
         )
 
     return config_selector

@@ -493,18 +493,20 @@ def forecast_dmfm(
         # Override config with kwargs (excluding shock objects which can't be
         # merged via dict update)
         config_dict = {
-            k: v for k, v in config.__dict__.items()
-            if k not in ('shock_schedule', 'future_shocks')
+            k: v
+            for k, v in config.__dict__.items()
+            if k not in ("shock_schedule", "future_shocks")
         }
         override_dict = {
-            k: v for k, v in kwargs.items()
-            if k not in ('shock_schedule', 'future_shocks')
+            k: v
+            for k, v in kwargs.items()
+            if k not in ("shock_schedule", "future_shocks")
         }
         config_dict.update(override_dict)
 
         # Handle shock parameters separately
-        shock_schedule = kwargs.get('shock_schedule', config.shock_schedule)
-        future_shocks = kwargs.get('future_shocks', config.future_shocks)
+        shock_schedule = kwargs.get("shock_schedule", config.shock_schedule)
+        future_shocks = kwargs.get("future_shocks", config.future_shocks)
 
         config = ForecastConfig(
             **config_dict,
@@ -521,7 +523,7 @@ def forecast_dmfm(
     seasonal_adjusted = False
     if config.seasonal_period is not None:
         Y_fit = seasonal_difference(Y, config.seasonal_period)
-        mask_fit = mask[config.seasonal_period:] & mask[:-config.seasonal_period]
+        mask_fit = mask[config.seasonal_period :] & mask[: -config.seasonal_period]
         seasonal_adjusted = True
         T_fit = Y_fit.shape[0]
     else:
@@ -535,6 +537,7 @@ def forecast_dmfm(
         # When data is differenced, shock timing shifts by seasonal_period
         # Create adjusted schedule with shifted start/end times
         from ..DMFM.shocks import Shock, ShockSchedule
+
         adjusted_shocks = []
         for shock in config.shock_schedule.shocks:
             # Shift timing back by seasonal_period
@@ -589,6 +592,7 @@ def forecast_dmfm(
             )
         else:
             from ..DMFM.shocks import ShockSchedule
+
             extended_schedule = ShockSchedule(config.future_shocks or [])
 
     # Generate forecasts by iterating dynamics with shock support
@@ -604,11 +608,13 @@ def forecast_dmfm(
                 t_abs = T_fit + h
                 factor_shock_effect = np.zeros((model.k1, model.k2))
                 # Check extended schedule for active shocks
-                if 'extended_schedule' in dir() and extended_schedule is not None:
+                if "extended_schedule" in dir() and extended_schedule is not None:
                     for s, shock in enumerate(extended_schedule.factor_shocks):
                         intensity = shock.indicator(t_abs)
                         if intensity > 0 and s < shock_effects.n_factor_shocks:
-                            factor_shock_effect += intensity * shock_effects.factor_effects[s]
+                            factor_shock_effect += (
+                                intensity * shock_effects.factor_effects[s]
+                            )
 
         # Evolve factors
         F_next = model.dynamics.evolve(F_hist, shock_effect=factor_shock_effect)
@@ -619,7 +625,7 @@ def forecast_dmfm(
 
         # Add observation-level shock effects
         if shock_effects is not None and shock_effects.observation_effects is not None:
-            if 'extended_schedule' in dir() and extended_schedule is not None:
+            if "extended_schedule" in dir() and extended_schedule is not None:
                 t_abs = T_fit + h
                 for s, shock in enumerate(extended_schedule.observation_shocks):
                     intensity = shock.indicator(t_abs)
@@ -636,7 +642,7 @@ def forecast_dmfm(
 
     # Integrate seasonal differences if applied
     if seasonal_adjusted:
-        last_obs = Y[-config.seasonal_period:]
+        last_obs = Y[-config.seasonal_period :]
         fcst = integrate_seasonal_diff(last_obs, fcst, config.seasonal_period)
 
     return ForecastResult(

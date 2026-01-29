@@ -150,9 +150,7 @@ class Shock:
                     f"Shock '{self.name}' with exponential decay requires decay_rate"
                 )
             if not 0 < self.decay_rate < 1:
-                raise ValueError(
-                    f"decay_rate must be in (0, 1), got {self.decay_rate}"
-                )
+                raise ValueError(f"decay_rate must be in (0, 1), got {self.decay_rate}")
         if self.decay_type == DecayType.LINEAR and self.end_t is None:
             raise ValueError(
                 f"Shock '{self.name}' with linear decay requires finite end_t"
@@ -502,7 +500,9 @@ class ShockSchedule:
 
     def __repr__(self) -> str:
         """String representation."""
-        return f"ShockSchedule({len(self.shocks)} shocks: {[s.name for s in self.shocks]})"
+        return (
+            f"ShockSchedule({len(self.shocks)} shocks: {[s.name for s in self.shocks]})"
+        )
 
     def __len__(self) -> int:
         """Number of shocks."""

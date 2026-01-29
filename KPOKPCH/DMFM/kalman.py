@@ -301,7 +301,13 @@ class KalmanFilterDMFM:
 
         # Run filter with shock contributions
         x_pred, P_pred, x_filt, P_filt = self._kalman_filter(
-            Y, mask, T_mat, mu, Q, Z, R,
+            Y,
+            mask,
+            T_mat,
+            mu,
+            Q,
+            Z,
+            R,
             factor_shock_contrib=factor_shock_contrib,
             obs_shock_contrib=obs_shock_contrib,
         )
@@ -399,8 +405,15 @@ class KalmanFilterDMFM:
 
             # Update step with observation shock adjustment
             x_post, P_post = self._kalman_update(
-                Y[t], mask[t], x_prior, P_prior, Z, R,
-                obs_shock_contrib=obs_shock_contrib[t] if obs_shock_contrib is not None else None,
+                Y[t],
+                mask[t],
+                x_prior,
+                P_prior,
+                Z,
+                R,
+                obs_shock_contrib=(
+                    obs_shock_contrib[t] if obs_shock_contrib is not None else None
+                ),
             )
 
             # Store

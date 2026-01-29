@@ -1,4 +1,9 @@
-"""Forecast Swiss health costs using DMFM."""
+"""Forecast Swiss health costs using DMFM.
+
+Includes shock/intervention handling:
+- COVID-19 (2020Q2-Q3): Temporary disruption modeled as factor-level shock
+- ZG hospital policy (2026Q1+): ZG pays hospital stays directly (costs = 0)
+"""
 
 import argparse
 import csv
@@ -12,7 +17,13 @@ from KPOKPCH.forecast import (
     ForecastConfig,
     forecast_dmfm,
 )
-from KPOKPCH.DMFM import select_rank, print_selection_summary
+from KPOKPCH.DMFM import select_rank, print_selection_summary, ShockSchedule
+
+from shocks_config import (
+    create_covid_shock,
+    apply_zg_policy_to_forecast,
+    get_zg_policy_info,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = "health_costs_tensor.csv"
@@ -125,16 +136,44 @@ def main():
         k1, k2 = args.k1, args.k2
         print(f"Using: k1={k1}, k2={k2}")
 
-    # Forecast
+    # Create COVID shock schedule (data includes 2020Q2-Q3)
+    covid_shock = create_covid_shock()
+    shock_schedule = ShockSchedule([covid_shock])
+    print(
+        f"Including shock: {covid_shock.name} (t={covid_shock.start_t}-{covid_shock.end_t})"
+    )
+
+    # Forecast with shock handling
     config = ForecastConfig(
-        k1=k1, k2=k2, P=1, seasonal_period=4, max_iter=100, verbose=verbose
+        k1=k1,
+        k2=k2,
+        P=1,
+        seasonal_period=4,
+        max_iter=100,
+        verbose=verbose,
+        shock_schedule=shock_schedule,
     )
 
     steps = 4  # One year ahead
     result = forecast_dmfm(Y, steps=steps, config=config)
 
+    # Report shock effects if estimated
+    if result.shock_effects is not None:
+        if result.shock_effects.factor_effects is not None:
+            print(
+                f"Estimated COVID factor effect magnitude: "
+                f"{np.linalg.norm(result.shock_effects.factor_effects[0]):.4f}"
+            )
+
     fcst = result.forecast * scale
     future_periods = generate_future_periods(periods[-1], steps)
+
+    # Apply ZG hospital policy: ZG séjours = 0 for 2026 periods
+    zg_policy = get_zg_policy_info()
+    fcst = apply_zg_policy_to_forecast(fcst, future_periods[0], cantons, groups)
+    print(
+        f"Applied policy: {zg_policy['name']} ({zg_policy['start_period']}-{zg_policy['end_period']})"
+    )
 
     # Add CH as aggregate (27th canton)
     data_ch = np.nansum(data, axis=1, keepdims=True)
