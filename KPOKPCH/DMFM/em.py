@@ -12,6 +12,67 @@ from .dynamics import DMFMDynamics
 from .kalman import KalmanFilterDMFM
 
 
+def _normalize_rotation(
+    R: np.ndarray, C: np.ndarray, F: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply sign normalization to loadings and factors.
+
+    After QR orthonormalization, the loadings are identified only up to
+    sign flips. This function pins down a unique rotation by flipping
+    column signs so the element with largest absolute value in each
+    column is positive.
+
+    Parameters
+    ----------
+    R : np.ndarray
+        Row loadings of shape (p1, k1), assumed orthonormal columns.
+    C : np.ndarray
+        Column loadings of shape (p2, k2), assumed orthonormal columns.
+    F : np.ndarray
+        Factor matrices of shape (T, k1, k2).
+
+    Returns
+    -------
+    R_norm : np.ndarray
+        Rotation-identified row loadings.
+    C_norm : np.ndarray
+        Rotation-identified column loadings.
+    F_norm : np.ndarray
+        Correspondingly rotated factors.
+
+    Notes
+    -----
+    Sign normalization ensures interpretability by making dominant loadings
+    positive. This is applied separately to row and column dimensions since
+    the DMFM has bilinear structure Y = R @ F @ C'.
+    """
+    k1, k2 = R.shape[1], C.shape[1]
+    T = F.shape[0]
+
+    R_norm = R.copy()
+    C_norm = C.copy()
+    F_norm = F.copy()
+
+    # --- Sign normalization for R ---
+    # For each column, flip sign if the largest absolute element is negative
+    for j in range(k1):
+        max_idx = np.argmax(np.abs(R_norm[:, j]))
+        if R_norm[max_idx, j] < 0:
+            R_norm[:, j] *= -1
+            # Flip corresponding row of factors
+            F_norm[:, j, :] *= -1
+
+    # --- Sign normalization for C ---
+    for j in range(k2):
+        max_idx = np.argmax(np.abs(C_norm[:, j]))
+        if C_norm[max_idx, j] < 0:
+            C_norm[:, j] *= -1
+            # Flip corresponding column of factors
+            F_norm[:, :, j] *= -1
+
+    return R_norm, C_norm, F_norm
+
+
 @dataclass
 class EMConfig:
     """Configuration for EM algorithm.
@@ -312,6 +373,9 @@ class EMEstimatorDMFM:
         for t in range(F.shape[0]):
             F[t] = R_fac @ F[t] @ C_fac.T
 
+        # Apply rotation identification constraints (sign + ordering)
+        R_new, C_new, F = _normalize_rotation(R_new, C_new, F)
+
         # Check if we're in I(1) mode (skip dynamics and drift updates)
         is_i1 = self.model.dynamics is not None and self.model.dynamics.i1_factors
         is_kronecker = (
@@ -361,6 +425,7 @@ class EMEstimatorDMFM:
             "K": K_new,
             "P": P_new,
             "Q": Q_new,
+            "F": F,  # Include rotation-normalized factors
         }
 
     # ------------------------------------------------------------------
@@ -401,7 +466,7 @@ class EMEstimatorDMFM:
         new_params : dict
             Dictionary of new parameter values.
         F : np.ndarray
-            Updated factors.
+            Updated factors (fallback if not in new_params).
         """
         # Store dynamics flags
         dyn_flags = {}
@@ -419,7 +484,8 @@ class EMEstimatorDMFM:
         self.model._Qmat = new_params["Q"]
         self.model._H = new_params["H"]
         self.model._K = new_params["K"]
-        self.model._F = F
+        # Use rotation-normalized F from M-step if available
+        self.model._F = new_params.get("F", F)
 
         # Recreate dynamics object with drift
         self.model._dynamics = DMFMDynamics(
