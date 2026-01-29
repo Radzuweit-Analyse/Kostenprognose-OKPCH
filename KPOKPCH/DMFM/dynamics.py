@@ -56,9 +56,9 @@ class DMFMDynamics:
         F_t = A_1 @ F_{t-1} @ B_1^T + ... + A_P @ F_{t-P} @ B_P^T + E_t
 
     where:
-        - F_t is a (k1 × k2) matrix of factors at time t
-        - A_l are (k1 × k1) row transition matrices
-        - B_l are (k2 × k2) column transition matrices
+        - F_t is a (k1 x k2) matrix of factors at time t
+        - A_l are (k1 x k1) row transition matrices
+        - B_l are (k2 x k2) column transition matrices
         - E_t ~ MN(0, P, Q) is matrix normal innovation
 
     Parameters
@@ -208,12 +208,15 @@ class DMFMDynamics:
     # ------------------------------------------------------------------
 
     def evolve(
-        self, F_history: list[np.ndarray], add_noise: bool = False
+        self,
+        F_history: list[np.ndarray],
+        add_noise: bool = False,
+        shock_effect: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Compute next factor matrix given history with drift.
+        """Compute next factor matrix given history with drift and optional shock.
 
-        Applies the MAR(P) recursion with drift:
-            F_t = C + Σ_{l=1}^P A_l @ F_{t-l} @ B_l^T + E_t
+        Applies the MAR(P) recursion with drift and shock:
+            F_t = C + Σ_{l=1}^P A_l @ F_{t-l} @ B_l^T + Γ_shock + E_t
 
         Parameters
         ----------
@@ -222,6 +225,11 @@ class DMFMDynamics:
             Each array has shape (k1, k2).
         add_noise : bool, default False
             Whether to add matrix normal noise E_t ~ MN(0, Pmat, Qmat).
+        shock_effect : np.ndarray, optional
+            Additive shock effect matrix of shape (k1, k2). This represents
+            the combined effect of all active factor-level shocks at time t,
+            typically computed as Σ_s X[t,s] * Γ_s where X is the shock
+            indicator and Γ_s is the effect matrix for shock s.
 
         Returns
         -------
@@ -238,6 +246,10 @@ class DMFMDynamics:
         >>> dynamics = DMFMDynamics(A=[A1], B=[B1], Pmat=P, Qmat=Q, C=drift)
         >>> F_history = [F_tm1]  # Just one lag for MAR(1)
         >>> F_t = dynamics.evolve(F_history)
+
+        >>> # With shock effect
+        >>> shock_effect = 0.5 * Gamma_covid  # 50% intensity shock
+        >>> F_t = dynamics.evolve(F_history, shock_effect=shock_effect)
         """
         if len(F_history) != self.P:
             raise ValueError(
@@ -254,6 +266,15 @@ class DMFMDynamics:
                     f"expected ({self.k1}, {self.k2})"
                 )
             F_next += self.A[l] @ F_lag @ self.B[l].T
+
+        # Add shock effect (deterministic intervention)
+        if shock_effect is not None:
+            if shock_effect.shape != (self.k1, self.k2):
+                raise ValueError(
+                    f"shock_effect has shape {shock_effect.shape}, "
+                    f"expected ({self.k1}, {self.k2})"
+                )
+            F_next += shock_effect
 
         if add_noise:
             # Sample from matrix normal MN(0, Pmat, Qmat)

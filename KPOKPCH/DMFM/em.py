@@ -1,15 +1,23 @@
-"""EM algorithm for estimating the DMFM."""
+"""EM algorithm for estimating the DMFM.
+
+This module implements the Expectation-Maximization algorithm for estimating
+the parameters of a Dynamic Matrix Factor Model, with support for known
+shocks/interventions.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional, TYPE_CHECKING
 from numpy.linalg import inv
 import numpy as np
 
 from .model import DMFMModel
 from .dynamics import DMFMDynamics
 from .kalman import KalmanFilterDMFM
+
+if TYPE_CHECKING:
+    from .shocks import ShockSchedule, ShockEffects
 
 
 def _normalize_rotation(
@@ -111,6 +119,8 @@ class EMResult:
         Log-likelihood at each iteration.
     diff_trace : list[float]
         Parameter difference at each iteration.
+    shock_effects : ShockEffects, optional
+        Estimated shock effect parameters (if shocks were provided).
     """
 
     converged: bool
@@ -118,6 +128,7 @@ class EMResult:
     final_loglik: float
     loglik_trace: list[float]
     diff_trace: list[float]
+    shock_effects: Optional["ShockEffects"] = None
 
 
 class EMEstimatorDMFM:
@@ -180,6 +191,7 @@ class EMEstimatorDMFM:
         self,
         Y: np.ndarray,
         mask: np.ndarray | None = None,
+        shock_schedule: Optional["ShockSchedule"] = None,
         checkpoint_callback: Callable[[int, dict], None] | None = None,
     ) -> EMResult:
         """Run EM algorithm until convergence.
@@ -190,6 +202,10 @@ class EMEstimatorDMFM:
             Observed data of shape (T, p1, p2).
         mask : np.ndarray, optional
             Boolean mask for missing values (True = observed).
+        shock_schedule : ShockSchedule, optional
+            Schedule of known shocks/interventions. If provided, shock effects
+            will be estimated as part of the M-step (unless shocks have
+            pre-specified fixed_effect values).
         checkpoint_callback : callable, optional
             Function called after each iteration with signature
             ``callback(iteration: int, state: dict)``.
@@ -197,7 +213,8 @@ class EMEstimatorDMFM:
         Returns
         -------
         EMResult
-            Fitting results including convergence status and traces.
+            Fitting results including convergence status, traces, and
+            estimated shock effects (if shocks were provided).
 
         Raises
         ------
@@ -205,6 +222,17 @@ class EMEstimatorDMFM:
             If data dimensions don't match model configuration.
         RuntimeError
             If EM algorithm encounters numerical issues.
+
+        Notes
+        -----
+        When shocks are provided, the EM algorithm estimates both the standard
+        DMFM parameters and the shock effect matrices. The E-step conditions on
+        current shock effect estimates, and the M-step updates both model
+        parameters and shock effects.
+
+        The state-space model with shocks becomes:
+            State:       z_t = μ + T @ z_{t-1} + Σ_s X_f[t,s] * vec(Γ_s) + η_t
+            Observation: y_t = Z @ z_t + Σ_s X_o[t,s] * vec(γ_s) + ε_t
         """
         # Validate inputs
         self._validate_data(Y)
@@ -219,7 +247,35 @@ class EMEstimatorDMFM:
         k1, k2 = self.model.k1, self.model.k2
         Pord = self.model.P
         r = k1 * k2
-        T = Y.shape[0]
+        Tn = Y.shape[0]
+
+        # Initialize shock effects if shocks provided
+        shock_effects: Optional["ShockEffects"] = None
+        if shock_schedule is not None and shock_schedule.n_shocks > 0:
+            from .shocks import ShockEffects
+            # Initialize with zeros (or fixed effects where specified)
+            n_f = shock_schedule.n_factor_shocks
+            n_o = shock_schedule.n_observation_shocks
+
+            factor_effects = None
+            obs_effects = None
+
+            if n_f > 0:
+                factor_effects = np.zeros((n_f, k1, k2))
+                for s, shock in enumerate(shock_schedule.factor_shocks):
+                    if shock.fixed_effect is not None:
+                        factor_effects[s] = shock.fixed_effect
+
+            if n_o > 0:
+                obs_effects = np.zeros((n_o, self.model.p1, self.model.p2))
+                for s, shock in enumerate(shock_schedule.observation_shocks):
+                    if shock.fixed_effect is not None:
+                        obs_effects[s] = shock.fixed_effect
+
+            shock_effects = ShockEffects(
+                factor_effects=factor_effects,
+                observation_effects=obs_effects,
+            )
 
         last_ll = -np.inf
 
@@ -231,8 +287,8 @@ class EMEstimatorDMFM:
             # ---------- E-STEP ----------
             kf = KalmanFilterDMFM(self.model)
 
-            # Filter
-            state = kf.filter(Y, mask)
+            # Filter (with shocks if provided)
+            state = kf.filter(Y, mask, shock_schedule, shock_effects)
 
             # Smooth
             state = kf.smooth(state)
@@ -244,7 +300,17 @@ class EMEstimatorDMFM:
             # Store previous parameters for convergence check
             prev_params = self._extract_params()
 
-            # Update all parameters
+            # Update shock effects first (if applicable)
+            if shock_schedule is not None and shock_effects is not None:
+                from .shocks import estimate_shock_effects
+                shock_effects = estimate_shock_effects(
+                    Y, F,
+                    self.model.R, self.model.C,
+                    self.model.A, self.model.B,
+                    shock_schedule, mask,
+                )
+
+            # Update all model parameters
             new_params = self._m_step(Y, F, state.P_smooth, state.P_smooth_lag, mask)
 
             # Update model with new parameters
@@ -253,14 +319,14 @@ class EMEstimatorDMFM:
             # ---------- CONVERGENCE CHECK ----------
             # Evaluate log-likelihood under updated parameters
             kf_eval = KalmanFilterDMFM(self.model)
-            state_eval = kf_eval.filter(Y, mask)
+            state_eval = kf_eval.filter(Y, mask, shock_schedule, shock_effects)
             state_eval = kf_eval.smooth(state_eval)
 
             # Update model factors with smoothed estimates
             self.model._F = kf_eval.extract_factors(state_eval, smoothed=True)
 
             # Compute log-likelihood
-            ll = kf_eval.log_likelihood(Y, mask, state_eval)
+            ll = kf_eval.log_likelihood(Y, mask, state_eval, shock_schedule, shock_effects)
 
             # Compute parameter difference
             diff = _compute_param_diff(
@@ -299,7 +365,8 @@ class EMEstimatorDMFM:
                     "diff": diff,
                     "params": new_params,
                     "factors": self.model.F,
-                    "state": state_eval,  # Include full Kalman state
+                    "state": state_eval,
+                    "shock_effects": shock_effects,
                 }
                 checkpoint_callback(it + 1, checkpoint_state)
 
@@ -325,6 +392,7 @@ class EMEstimatorDMFM:
             final_loglik=ll,
             loglik_trace=self._loglik_trace.copy(),
             diff_trace=self._diff_trace.copy(),
+            shock_effects=shock_effects,
         )
 
         return self.result

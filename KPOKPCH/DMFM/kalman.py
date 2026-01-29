@@ -1,11 +1,18 @@
-"""Kalman filtering and smoothing for the DMFM."""
+"""Kalman filtering and smoothing for the DMFM.
+
+This module implements the Kalman filter and Rauch-Tung-Striebel (RTS) smoother
+for the Dynamic Matrix Factor Model, with support for intervention/shock effects.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 import numpy as np
 from numpy.linalg import inv, LinAlgError
+
+if TYPE_CHECKING:
+    from .shocks import ShockSchedule, ShockEffects
 
 
 @dataclass
@@ -206,8 +213,14 @@ class KalmanFilterDMFM:
     # Filtering
     # ------------------------------------------------------------------
 
-    def filter(self, Y: np.ndarray, mask: np.ndarray | None = None) -> KalmanState:
-        """Run Kalman filter on observed data.
+    def filter(
+        self,
+        Y: np.ndarray,
+        mask: np.ndarray | None = None,
+        shock_schedule: Optional["ShockSchedule"] = None,
+        shock_effects: Optional["ShockEffects"] = None,
+    ) -> KalmanState:
+        """Run Kalman filter on observed data with optional shock/intervention support.
 
         Parameters
         ----------
@@ -216,6 +229,11 @@ class KalmanFilterDMFM:
         mask : np.ndarray, optional
             Boolean mask for missing values (True = observed).
             If None, assumes all data is observed.
+        shock_schedule : ShockSchedule, optional
+            Schedule of shocks/interventions. If provided along with shock_effects,
+            the filter will account for known intervention effects.
+        shock_effects : ShockEffects, optional
+            Estimated or pre-specified shock effect magnitudes.
 
         Returns
         -------
@@ -226,16 +244,67 @@ class KalmanFilterDMFM:
         ------
         ValueError
             If data dimensions don't match model.
+
+        Notes
+        -----
+        When shocks are provided, the state-space model becomes:
+
+            State:       z_t = μ + T @ z_{t-1} + Σ_s X_f[t,s] * vec(Γ_s) + η_t
+            Observation: y_t = Z @ z_t + Σ_s X_o[t,s] * vec(γ_s) + ε_t
+
+        where X_f, X_o are factor/observation shock indicators and Γ_s, γ_s
+        are the corresponding effect matrices.
         """
         self._validate_data(Y)
 
         if mask is None:
             mask = np.ones_like(Y, dtype=bool)
 
-        T, mu, Q, Z, R = self._construct_matrices()
+        T_mat, mu, Q, Z, R = self._construct_matrices()
 
-        # Run filter
-        x_pred, P_pred, x_filt, P_filt = self._kalman_filter(Y, mask, T, mu, Q, Z, R)
+        # Build shock contribution vectors if shocks provided
+        factor_shock_contrib = None
+        obs_shock_contrib = None
+
+        if shock_schedule is not None and shock_effects is not None:
+            Tn = Y.shape[0]
+            k1, k2 = self.model.k1, self.model.k2
+            r = k1 * k2
+
+            # Factor-level shocks: contribution to state prediction
+            if shock_effects.factor_effects is not None:
+                X_f = shock_schedule.build_factor_design_matrix(Tn)
+                n_f = X_f.shape[1]
+                if n_f > 0:
+                    # Pre-compute shock contribution for each time step
+                    # Shape: (T, r) - contribution to first r elements of state
+                    factor_shock_contrib = np.zeros((Tn, r))
+                    for t in range(Tn):
+                        for s in range(n_f):
+                            if X_f[t, s] > 0:
+                                effect = shock_effects.factor_effects[s]
+                                factor_shock_contrib[t] += X_f[t, s] * effect.ravel()
+
+            # Observation-level shocks: contribution to measurement prediction
+            if shock_effects.observation_effects is not None:
+                X_o = shock_schedule.build_observation_design_matrix(Tn)
+                n_o = X_o.shape[1]
+                if n_o > 0:
+                    # Pre-compute shock contribution for each time step
+                    # Shape: (T, p1*p2)
+                    obs_shock_contrib = np.zeros((Tn, self.model.p1 * self.model.p2))
+                    for t in range(Tn):
+                        for s in range(n_o):
+                            if X_o[t, s] > 0:
+                                effect = shock_effects.observation_effects[s]
+                                obs_shock_contrib[t] += X_o[t, s] * effect.ravel()
+
+        # Run filter with shock contributions
+        x_pred, P_pred, x_filt, P_filt = self._kalman_filter(
+            Y, mask, T_mat, mu, Q, Z, R,
+            factor_shock_contrib=factor_shock_contrib,
+            obs_shock_contrib=obs_shock_contrib,
+        )
 
         # Store state
         self.state = KalmanState(
@@ -253,8 +322,34 @@ class KalmanFilterDMFM:
         Q: np.ndarray,
         Z: np.ndarray,
         R: np.ndarray,
+        factor_shock_contrib: Optional[np.ndarray] = None,
+        obs_shock_contrib: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Kalman filter implementation with drift.
+        """Kalman filter implementation with drift and shock/intervention support.
+
+        Parameters
+        ----------
+        Y : np.ndarray
+            Observations (T, p1, p2).
+        mask : np.ndarray
+            Missing data mask (T, p1, p2).
+        T : np.ndarray
+            State transition matrix (d, d).
+        mu : np.ndarray
+            Drift vector (d,).
+        Q : np.ndarray
+            State innovation covariance (d, d).
+        Z : np.ndarray
+            Observation matrix (p1*p2, d).
+        R : np.ndarray
+            Observation noise covariance (p1*p2, p1*p2).
+        factor_shock_contrib : np.ndarray, optional
+            Factor-level shock contributions (T, r) where r = k1*k2.
+            Added to state prediction mean.
+        obs_shock_contrib : np.ndarray, optional
+            Observation-level shock contributions (T, p1*p2).
+            Subtracted from observation before update (equivalently, added to
+            predicted observation).
 
         Returns
         -------
@@ -269,6 +364,7 @@ class KalmanFilterDMFM:
         """
         Tn = Y.shape[0]
         d = T.shape[0]
+        r = self.model.k1 * self.model.k2  # Size of current factor block
 
         # Storage
         x_pred = np.zeros((Tn, d))
@@ -297,8 +393,15 @@ class KalmanFilterDMFM:
                 if self.config.check_symmetry:
                     P_prior = 0.5 * (P_prior + P_prior.T)
 
-            # Update step
-            x_post, P_post = self._kalman_update(Y[t], mask[t], x_prior, P_prior, Z, R)
+            # Add factor-level shock contribution to state prediction
+            if factor_shock_contrib is not None:
+                x_prior[:r] += factor_shock_contrib[t]
+
+            # Update step with observation shock adjustment
+            x_post, P_post = self._kalman_update(
+                Y[t], mask[t], x_prior, P_prior, Z, R,
+                obs_shock_contrib=obs_shock_contrib[t] if obs_shock_contrib is not None else None,
+            )
 
             # Store
             x_pred[t] = x_prior
@@ -316,8 +419,9 @@ class KalmanFilterDMFM:
         P_prior: np.ndarray,
         Z: np.ndarray,
         R: np.ndarray,
+        obs_shock_contrib: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Kalman update step (measurement update).
+        """Kalman update step (measurement update) with shock support.
 
         Parameters
         ----------
@@ -333,6 +437,11 @@ class KalmanFilterDMFM:
             Full observation matrix.
         R : np.ndarray
             Full observation noise covariance.
+        obs_shock_contrib : np.ndarray, optional
+            Observation-level shock contribution at time t, shape (p1*p2,).
+            This deterministic term is added to the predicted observation,
+            which is equivalent to subtracting it from the actual observation
+            before computing the innovation.
 
         Returns
         -------
@@ -354,6 +463,11 @@ class KalmanFilterDMFM:
         R_t = R[np.ix_(idx, idx)]
         y_obs = y_vec[idx]
 
+        # Predicted observation: y_hat = Z @ x_prior + shock_contribution
+        y_pred = Z_t @ x_prior
+        if obs_shock_contrib is not None:
+            y_pred += obs_shock_contrib[idx]
+
         # Innovation covariance S = Z @ P @ Z^T + R
         S = Z_t @ P_prior @ Z_t.T + R_t
         S += self.config.regularization * np.eye(S.shape[0])
@@ -366,8 +480,8 @@ class KalmanFilterDMFM:
 
         K = P_prior @ Z_t.T @ S_inv
 
-        # Update
-        innovation = y_obs - Z_t @ x_prior
+        # Update: innovation = y_obs - y_pred (shock already in y_pred)
+        innovation = y_obs - y_pred
         x_post = x_prior + K @ innovation
         P_post = P_prior - K @ Z_t @ P_prior
 
@@ -486,6 +600,8 @@ class KalmanFilterDMFM:
         Y: np.ndarray,
         mask: np.ndarray | None = None,
         state: KalmanState | None = None,
+        shock_schedule: Optional["ShockSchedule"] = None,
+        shock_effects: Optional["ShockEffects"] = None,
     ) -> float:
         """Compute log-likelihood of observed data.
 
@@ -497,6 +613,10 @@ class KalmanFilterDMFM:
             Boolean mask for missing values.
         state : KalmanState, optional
             Smoothed state to use. If None, uses self.state.
+        shock_schedule : ShockSchedule, optional
+            Schedule of shocks/interventions.
+        shock_effects : ShockEffects, optional
+            Estimated or pre-specified shock effect magnitudes.
 
         Returns
         -------
@@ -511,7 +631,8 @@ class KalmanFilterDMFM:
         Notes
         -----
         Computes the exact log-likelihood accounting for uncertainty
-        in the latent states via the smoothed covariances.
+        in the latent states via the smoothed covariances. When shocks
+        are provided, the observation prediction includes shock effects.
         """
         if mask is None:
             mask = np.ones_like(Y, dtype=bool)
@@ -522,12 +643,48 @@ class KalmanFilterDMFM:
         if state is None or state.x_smooth is None:
             raise ValueError("No smoothed state available. Call smooth() first.")
 
-        return self._compute_loglik(Y, mask, state)
+        # Build observation shock contributions if provided
+        obs_shock_contrib = None
+        if shock_schedule is not None and shock_effects is not None:
+            if shock_effects.observation_effects is not None:
+                Tn = Y.shape[0]
+                X_o = shock_schedule.build_observation_design_matrix(Tn)
+                n_o = X_o.shape[1]
+                if n_o > 0:
+                    obs_shock_contrib = np.zeros((Tn, self.model.p1 * self.model.p2))
+                    for t in range(Tn):
+                        for s in range(n_o):
+                            if X_o[t, s] > 0:
+                                effect = shock_effects.observation_effects[s]
+                                obs_shock_contrib[t] += X_o[t, s] * effect.ravel()
+
+        return self._compute_loglik(Y, mask, state, obs_shock_contrib)
 
     def _compute_loglik(
-        self, Y: np.ndarray, mask: np.ndarray, state: KalmanState
+        self,
+        Y: np.ndarray,
+        mask: np.ndarray,
+        state: KalmanState,
+        obs_shock_contrib: Optional[np.ndarray] = None,
     ) -> float:
-        """Compute log-likelihood using smoothed estimates."""
+        """Compute log-likelihood using smoothed estimates.
+
+        Parameters
+        ----------
+        Y : np.ndarray
+            Observations (T, p1, p2).
+        mask : np.ndarray
+            Missing data mask (T, p1, p2).
+        state : KalmanState
+            Smoothed state.
+        obs_shock_contrib : np.ndarray, optional
+            Observation-level shock contributions (T, p1*p2).
+
+        Returns
+        -------
+        float
+            Log-likelihood value.
+        """
         Tn = Y.shape[0]
         k1, k2 = self.model.k1, self.model.k2
         r = k1 * k2
@@ -562,8 +719,13 @@ class KalmanFilterDMFM:
             Sigma_y = Z_t @ V_t @ Z_t.T + R_t
             Sigma_y += self.config.regularization * np.eye(idx.size)
 
+            # Predicted observation: y_hat = Z @ f + shock_contribution
+            y_pred = Z_t @ f_t
+            if obs_shock_contrib is not None:
+                y_pred += obs_shock_contrib[t, idx]
+
             # Innovation
-            innovation = y_vec[idx] - Z_t @ f_t
+            innovation = y_vec[idx] - y_pred
 
             # Log-likelihood contribution
             sign, logdet = np.linalg.slogdet(Sigma_y)

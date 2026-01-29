@@ -18,6 +18,17 @@ from .selection import (
     ModelSelectionResult,
     InformationCriteria,
 )
+from .shocks import (
+    Shock,
+    ShockSchedule,
+    ShockEffects,
+    ShockLevel,
+    ShockScope,
+    DecayType,
+    estimate_shock_effects,
+    apply_factor_shocks,
+    apply_observation_shocks,
+)
 
 __all__ = [
     # Model
@@ -48,6 +59,16 @@ __all__ = [
     "print_selection_summary",
     "ModelSelectionResult",
     "InformationCriteria",
+    # Shocks/Interventions
+    "Shock",
+    "ShockSchedule",
+    "ShockEffects",
+    "ShockLevel",
+    "ShockScope",
+    "DecayType",
+    "estimate_shock_effects",
+    "apply_factor_shocks",
+    "apply_observation_shocks",
     # Convenience
     "fit_dmfm",
 ]
@@ -66,6 +87,7 @@ def fit_dmfm(
     tol=1e-4,
     verbose=False,
     i1_factors=False,
+    shock_schedule=None,
 ):
     """Convenience function to fit DMFM in one call.
 
@@ -99,13 +121,16 @@ def fit_dmfm(
         - No drift is estimated
         - Estimation is done in levels (no differencing needed)
         This is useful for data with stochastic trends.
+    shock_schedule : ShockSchedule, optional
+        Schedule of known shocks/interventions. If provided, shock effects
+        will be estimated as part of the EM algorithm.
 
     Returns
     -------
     model : DMFMModel
         Fitted model.
     result : EMResult
-        EM fitting results.
+        EM fitting results (includes shock_effects if shocks provided).
 
     Examples
     --------
@@ -116,6 +141,14 @@ def fit_dmfm(
 
     >>> # For non-stationary data with stochastic trends
     >>> model, result = fit_dmfm(Y, k1=2, k2=2, i1_factors=True)
+
+    >>> # With shocks
+    >>> from KPOKPCH.DMFM import Shock, ShockSchedule
+    >>> schedule = ShockSchedule([
+    ...     Shock("covid", start_t=32, end_t=35),
+    ... ])
+    >>> model, result = fit_dmfm(Y, k1=2, k2=2, shock_schedule=schedule)
+    >>> print(result.shock_effects.factor_effects.shape)
     """
     import numpy as np
 
@@ -144,6 +177,6 @@ def fit_dmfm(
     # Fit
     em_config = EMConfig(max_iter=max_iter, tol=tol, verbose=verbose)
     estimator = EMEstimatorDMFM(model, em_config)
-    result = estimator.fit(Y, mask=mask)
+    result = estimator.fit(Y, mask=mask, shock_schedule=shock_schedule)
 
     return model, result

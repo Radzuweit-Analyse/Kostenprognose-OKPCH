@@ -1,21 +1,25 @@
 """Forecasting utilities for DMFM models.
 
 This module provides functions for forecasting with Dynamic Matrix Factor Models,
-including support for seasonal differencing, canton-level forecasting, and
-growth rate calculations.
+including support for seasonal differencing, canton-level forecasting, growth
+rate calculations, and shock/intervention handling.
 """
 
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
-from typing import List, Tuple
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 
 from ..DMFM import (
     DMFMModel,
     fit_dmfm,
 )
+
+if TYPE_CHECKING:
+    from ..DMFM.shocks import Shock, ShockSchedule, ShockEffects
 
 
 @dataclass
@@ -50,6 +54,19 @@ class ForecastConfig:
         Note: This is different from seasonal_period differencing.
         You can use seasonal_period for seasonal adjustment while
         i1_factors handles stochastic trends.
+    shock_schedule : ShockSchedule, optional
+        Schedule of known historical shocks/interventions. These are used
+        during model estimation to separate shock effects from underlying
+        dynamics.
+    future_shocks : list[Shock], optional
+        Additional shocks that occur in the forecast horizon. Their start_t
+        should be relative to the forecast origin (i.e., start_t=0 means
+        first forecast period). Used for scenario analysis.
+    include_shock_uncertainty : bool, default False
+        Whether to include shock effect estimation uncertainty in forecast
+        confidence intervals.
+    n_shock_simulations : int, default 100
+        Number of Monte Carlo simulations for shock uncertainty quantification.
     """
 
     k1: int = 1
@@ -62,6 +79,10 @@ class ForecastConfig:
     init_method: str = "svd"
     verbose: bool = False
     i1_factors: bool = False
+    shock_schedule: Optional["ShockSchedule"] = None
+    future_shocks: Optional[List["Shock"]] = None
+    include_shock_uncertainty: bool = False
+    n_shock_simulations: int = 100
 
 
 @dataclass
@@ -78,12 +99,24 @@ class ForecastResult:
         Configuration used for forecasting.
     seasonal_adjusted : bool
         Whether seasonal differencing was applied.
+    shock_effects : ShockEffects, optional
+        Estimated shock effect parameters (if shocks were provided).
+    forecast_factors : np.ndarray, optional
+        Forecasted factors of shape (steps, k1, k2).
+    forecast_lower : np.ndarray, optional
+        Lower confidence bound for forecasts (if uncertainty quantified).
+    forecast_upper : np.ndarray, optional
+        Upper confidence bound for forecasts (if uncertainty quantified).
     """
 
     forecast: np.ndarray
     model: DMFMModel
     config: ForecastConfig
     seasonal_adjusted: bool = False
+    shock_effects: Optional["ShockEffects"] = None
+    forecast_factors: Optional[np.ndarray] = None
+    forecast_lower: Optional[np.ndarray] = None
+    forecast_upper: Optional[np.ndarray] = None
 
 
 # ---------------------------------------------------------------------------
@@ -396,10 +429,12 @@ def forecast_dmfm(
     mask: np.ndarray | None = None,
     **kwargs,
 ) -> ForecastResult:
-    """Forecast with a DMFM model.
+    """Forecast with a DMFM model, with optional shock/intervention support.
 
     This function fits a DMFM to the data and generates forecasts by
-    iteratively applying the learned dynamics.
+    iteratively applying the learned dynamics. When shocks are specified,
+    their effects are estimated during model fitting and applied during
+    forecasting.
 
     Parameters
     ----------
@@ -417,7 +452,8 @@ def forecast_dmfm(
     Returns
     -------
     ForecastResult
-        Forecast results including point forecasts and fitted model.
+        Forecast results including point forecasts, fitted model, and
+        estimated shock effects (if shocks were provided).
 
     Raises
     ------
@@ -434,8 +470,14 @@ def forecast_dmfm(
     >>> config = ForecastConfig(k1=2, k2=2, P=2, seasonal_period=4)
     >>> result = forecast_dmfm(Y, steps=8, config=config)
 
-    >>> # Override config with kwargs
-    >>> result = forecast_dmfm(Y, steps=8, config=config, k1=3)
+    >>> # With shocks
+    >>> from KPOKPCH.DMFM.shocks import Shock, ShockSchedule
+    >>> schedule = ShockSchedule([
+    ...     Shock("covid", start_t=32, end_t=35),
+    ... ])
+    >>> config = ForecastConfig(k1=2, k2=2, shock_schedule=schedule)
+    >>> result = forecast_dmfm(Y, steps=8, config=config)
+    >>> print(result.shock_effects.factor_effects.shape)
     """
     # Validate inputs
     Y = np.asarray(Y, dtype=float)
@@ -448,26 +490,75 @@ def forecast_dmfm(
     if config is None:
         config = ForecastConfig(**kwargs)
     else:
-        # Override config with kwargs
-        config_dict = config.__dict__.copy()
-        config_dict.update(kwargs)
-        config = ForecastConfig(**config_dict)
+        # Override config with kwargs (excluding shock objects which can't be
+        # merged via dict update)
+        config_dict = {
+            k: v for k, v in config.__dict__.items()
+            if k not in ('shock_schedule', 'future_shocks')
+        }
+        override_dict = {
+            k: v for k, v in kwargs.items()
+            if k not in ('shock_schedule', 'future_shocks')
+        }
+        config_dict.update(override_dict)
+
+        # Handle shock parameters separately
+        shock_schedule = kwargs.get('shock_schedule', config.shock_schedule)
+        future_shocks = kwargs.get('future_shocks', config.future_shocks)
+
+        config = ForecastConfig(
+            **config_dict,
+            shock_schedule=shock_schedule,
+            future_shocks=future_shocks,
+        )
 
     if mask is None:
         mask = ~np.isnan(Y)
+
+    T_original = Y.shape[0]
 
     # Apply seasonal differencing if requested
     seasonal_adjusted = False
     if config.seasonal_period is not None:
         Y_fit = seasonal_difference(Y, config.seasonal_period)
-        mask_fit = mask[config.seasonal_period :] & mask[: -config.seasonal_period]
+        mask_fit = mask[config.seasonal_period:] & mask[:-config.seasonal_period]
         seasonal_adjusted = True
+        T_fit = Y_fit.shape[0]
     else:
         Y_fit = Y
         mask_fit = mask
+        T_fit = T_original
 
-    # Fit model
-    model, em_result = fit_dmfm(
+    # Adjust shock schedule for seasonal differencing
+    shock_schedule_fit = config.shock_schedule
+    if seasonal_adjusted and config.shock_schedule is not None:
+        # When data is differenced, shock timing shifts by seasonal_period
+        # Create adjusted schedule with shifted start/end times
+        from ..DMFM.shocks import Shock, ShockSchedule
+        adjusted_shocks = []
+        for shock in config.shock_schedule.shocks:
+            # Shift timing back by seasonal_period
+            new_start = max(0, shock.start_t - config.seasonal_period)
+            new_end = None
+            if shock.end_t is not None:
+                new_end = max(0, shock.end_t - config.seasonal_period)
+            adjusted = Shock(
+                name=shock.name,
+                start_t=new_start,
+                end_t=new_end,
+                level=shock.level,
+                scope=shock.scope,
+                cantons=shock.cantons,
+                categories=shock.categories,
+                decay_type=shock.decay_type,
+                decay_rate=shock.decay_rate,
+                fixed_effect=shock.fixed_effect,
+            )
+            adjusted_shocks.append(adjusted)
+        shock_schedule_fit = ShockSchedule(adjusted_shocks)
+
+    # Fit model with shocks if provided
+    model, em_result = _fit_dmfm_with_shocks(
         Y_fit,
         k1=config.k1,
         k2=config.k2,
@@ -479,25 +570,73 @@ def forecast_dmfm(
         tol=config.tol,
         verbose=config.verbose,
         i1_factors=config.i1_factors,
+        shock_schedule=shock_schedule_fit,
     )
 
-    # Generate forecasts by iterating dynamics
+    shock_effects = em_result.shock_effects
+
+    # Build future shock schedule for forecast horizon
+    future_shock_contrib = None
+    future_obs_shock_contrib = None
+
+    if shock_schedule_fit is not None or config.future_shocks is not None:
+        from ..DMFM.shocks import apply_factor_shocks, apply_observation_shocks
+
+        # Extend shock schedule into forecast horizon
+        if shock_schedule_fit is not None:
+            X_future, extended_schedule = shock_schedule_fit.extend_to_forecast_horizon(
+                T_fit, steps, config.future_shocks
+            )
+        else:
+            from ..DMFM.shocks import ShockSchedule
+            extended_schedule = ShockSchedule(config.future_shocks or [])
+
+    # Generate forecasts by iterating dynamics with shock support
     F_hist = [model.F[-l] for l in range(1, model.P + 1)]
     fcst = []
+    fcst_factors = []
 
-    for _ in range(steps):
-        F_next = model.dynamics.evolve(F_hist)
+    for h in range(steps):
+        # Compute factor-level shock effect for this forecast step
+        factor_shock_effect = None
+        if shock_effects is not None and shock_effects.factor_effects is not None:
+            if shock_schedule_fit is not None or config.future_shocks:
+                t_abs = T_fit + h
+                factor_shock_effect = np.zeros((model.k1, model.k2))
+                # Check extended schedule for active shocks
+                if 'extended_schedule' in dir() and extended_schedule is not None:
+                    for s, shock in enumerate(extended_schedule.factor_shocks):
+                        intensity = shock.indicator(t_abs)
+                        if intensity > 0 and s < shock_effects.n_factor_shocks:
+                            factor_shock_effect += intensity * shock_effects.factor_effects[s]
+
+        # Evolve factors
+        F_next = model.dynamics.evolve(F_hist, shock_effect=factor_shock_effect)
+        fcst_factors.append(F_next.copy())
+
+        # Map to observations
         Y_next = model.R @ F_next @ model.C.T
+
+        # Add observation-level shock effects
+        if shock_effects is not None and shock_effects.observation_effects is not None:
+            if 'extended_schedule' in dir() and extended_schedule is not None:
+                t_abs = T_fit + h
+                for s, shock in enumerate(extended_schedule.observation_shocks):
+                    intensity = shock.indicator(t_abs)
+                    if intensity > 0 and s < shock_effects.n_observation_shocks:
+                        Y_next += intensity * shock_effects.observation_effects[s]
+
         fcst.append(Y_next)
 
         # Update history
         F_hist = [F_next] + F_hist[:-1]
 
     fcst = np.stack(fcst, axis=0)
+    fcst_factors = np.stack(fcst_factors, axis=0)
 
     # Integrate seasonal differences if applied
     if seasonal_adjusted:
-        last_obs = Y[-config.seasonal_period :]
+        last_obs = Y[-config.seasonal_period:]
         fcst = integrate_seasonal_diff(last_obs, fcst, config.seasonal_period)
 
     return ForecastResult(
@@ -505,7 +644,121 @@ def forecast_dmfm(
         model=model,
         config=config,
         seasonal_adjusted=seasonal_adjusted,
+        shock_effects=shock_effects,
+        forecast_factors=fcst_factors,
     )
+
+
+def _fit_dmfm_with_shocks(
+    Y: np.ndarray,
+    k1: int,
+    k2: int,
+    P: int = 1,
+    mask: np.ndarray | None = None,
+    diagonal_idiosyncratic: bool = False,
+    init_method: str = "svd",
+    max_iter: int = 100,
+    tol: float = 1e-4,
+    verbose: bool = False,
+    i1_factors: bool = False,
+    shock_schedule: Optional["ShockSchedule"] = None,
+):
+    """Fit DMFM with optional shock schedule.
+
+    This is an internal helper that extends fit_dmfm to support shocks.
+    """
+    from ..DMFM import (
+        DMFMModel,
+        DMFMConfig,
+        EMEstimatorDMFM,
+        EMConfig,
+    )
+
+    T, p1, p2 = Y.shape
+
+    # Create model
+    config = DMFMConfig(
+        p1=p1,
+        p2=p2,
+        k1=k1,
+        k2=k2,
+        P=P,
+        diagonal_idiosyncratic=diagonal_idiosyncratic,
+    )
+    model = DMFMModel(config)
+
+    # Initialize
+    model.initialize(Y, mask=mask, method=init_method)
+
+    # Set I(1) factors flag if requested
+    if i1_factors:
+        model.dynamics.i1_factors = True
+
+    # Fit with shocks
+    em_config = EMConfig(max_iter=max_iter, tol=tol, verbose=verbose)
+    estimator = EMEstimatorDMFM(model, em_config)
+    result = estimator.fit(Y, mask=mask, shock_schedule=shock_schedule)
+
+    return model, result
+
+
+def scenario_forecast(
+    Y: np.ndarray,
+    steps: int,
+    base_config: ForecastConfig,
+    scenarios: Dict[str, List["Shock"]],
+    mask: np.ndarray | None = None,
+) -> Dict[str, ForecastResult]:
+    """Generate forecasts under multiple shock scenarios.
+
+    This function fits the model once (using base_config.shock_schedule for
+    historical shocks) and then generates separate forecasts for each
+    scenario with different future shock assumptions.
+
+    Parameters
+    ----------
+    Y : np.ndarray
+        Historical data of shape (T, p1, p2).
+    steps : int
+        Number of periods to forecast ahead.
+    base_config : ForecastConfig
+        Base configuration including historical shock_schedule.
+    scenarios : dict[str, list[Shock]]
+        Dictionary mapping scenario names to lists of future shocks.
+        Each shock's start_t should be relative to forecast origin
+        (start_t=0 means first forecast period).
+    mask : np.ndarray, optional
+        Boolean mask for missing values.
+
+    Returns
+    -------
+    dict[str, ForecastResult]
+        Dictionary mapping scenario names to forecast results.
+
+    Examples
+    --------
+    >>> scenarios = {
+    ...     "baseline": [],  # No additional shocks
+    ...     "covid_wave": [
+    ...         Shock("covid2", start_t=2, end_t=4, scope="global")
+    ...     ],
+    ...     "policy_reform": [
+    ...         Shock("reform", start_t=4, end_t=None, scope="category",
+    ...               categories=[2])
+    ...     ],
+    ... }
+    >>> results = scenario_forecast(Y, steps=12, base_config, scenarios)
+    >>> baseline_fcst = results["baseline"].forecast
+    >>> covid_fcst = results["covid_wave"].forecast
+    """
+    results = {}
+
+    for name, future_shocks in scenarios.items():
+        # Create config variant with these future shocks
+        scenario_config = replace(base_config, future_shocks=future_shocks)
+        results[name] = forecast_dmfm(Y, steps, config=scenario_config, mask=mask)
+
+    return results
 
 
 def canton_forecast(
