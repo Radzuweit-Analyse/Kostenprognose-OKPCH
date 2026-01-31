@@ -1,8 +1,8 @@
 """Forecasting utilities for DMFM models.
 
 This module provides functions for forecasting with Dynamic Matrix Factor Models,
-including support for seasonal differencing, canton-level forecasting, growth
-rate calculations, and shock/intervention handling.
+including canton-level forecasting, growth rate calculations, and shock/intervention
+handling.
 """
 
 from __future__ import annotations
@@ -32,9 +32,6 @@ class ForecastConfig:
         Number of row and column factors.
     P : int, default 1
         MAR order.
-    seasonal_period : int or None, default None
-        Seasonal differencing period (e.g., 4 for quarterly data).
-        If None, no differencing is applied.
     max_iter : int, default 50
         Maximum EM iterations for model fitting.
     tol : float, default 1e-4
@@ -47,13 +44,10 @@ class ForecastConfig:
         Whether to print fitting progress.
     i1_factors : bool, default False
         Whether factors are integrated of order 1 (I(1) / random walk).
-        Per Barigozzi & Trapin (2025) Section 6, when True:
+        When True:
         - Dynamics A, B are fixed at identity
-        - No drift is estimated
-        - Data is estimated in levels (no differencing)
-        Note: This is different from seasonal_period differencing.
-        You can use seasonal_period for seasonal adjustment while
-        i1_factors handles stochastic trends.
+        - Drift is still estimated (random walk WITH drift for trending data)
+        - Data is estimated in levels
     shock_schedule : ShockSchedule, optional
         Schedule of known historical shocks/interventions. These are used
         during model estimation to separate shock effects from underlying
@@ -72,7 +66,6 @@ class ForecastConfig:
     k1: int = 1
     k2: int = 1
     P: int = 1
-    seasonal_period: int | None = None
     max_iter: int = 50
     tol: float = 1e-4
     diagonal_idiosyncratic: bool = False
@@ -97,8 +90,6 @@ class ForecastResult:
         Fitted DMFM model.
     config : ForecastConfig
         Configuration used for forecasting.
-    seasonal_adjusted : bool
-        Whether seasonal differencing was applied.
     shock_effects : ShockEffects, optional
         Estimated shock effect parameters (if shocks were provided).
     forecast_factors : np.ndarray, optional
@@ -112,89 +103,10 @@ class ForecastResult:
     forecast: np.ndarray
     model: DMFMModel
     config: ForecastConfig
-    seasonal_adjusted: bool = False
     shock_effects: Optional["ShockEffects"] = None
     forecast_factors: Optional[np.ndarray] = None
     forecast_lower: Optional[np.ndarray] = None
     forecast_upper: Optional[np.ndarray] = None
-
-
-# ---------------------------------------------------------------------------
-# Seasonal differencing utilities
-# ---------------------------------------------------------------------------
-
-
-def seasonal_difference(Y: np.ndarray, period: int) -> np.ndarray:
-    """Compute seasonal differences of Y.
-
-    Parameters
-    ----------
-    Y : np.ndarray
-        Data of shape (T, p1, p2).
-    period : int
-        Seasonal period (e.g., 4 for quarterly data).
-
-    Returns
-    -------
-    np.ndarray
-        Seasonal differences of shape (T-period, p1, p2).
-
-    Raises
-    ------
-    ValueError
-        If Y is not 3D or period is invalid.
-
-    Examples
-    --------
-    >>> Y_diff = seasonal_difference(Y, period=4)  # Quarterly seasonal diff
-    """
-    Y = np.asarray(Y, dtype=float)
-    if Y.ndim != 3:
-        raise ValueError(f"Y must be 3D array, got shape {Y.shape}")
-
-    T = Y.shape[0]
-    if period <= 0 or period >= T:
-        raise ValueError(f"period must be between 1 and {T-1}, got {period}")
-
-    return Y[period:] - Y[:-period]
-
-
-def integrate_seasonal_diff(
-    last_obs: np.ndarray, diffs: np.ndarray, period: int
-) -> np.ndarray:
-    """Integrate seasonal differences back to levels.
-
-    Parameters
-    ----------
-    last_obs : np.ndarray
-        Last 'period' observations before forecasting, shape (period, p1, p2).
-    diffs : np.ndarray
-        Seasonal difference forecasts, shape (steps, p1, p2).
-    period : int
-        Seasonal period.
-
-    Returns
-    -------
-    np.ndarray
-        Level forecasts of shape (steps, p1, p2).
-
-    Examples
-    --------
-    >>> # Y has shape (100, 10, 5), we forecast 8 steps with period=4
-    >>> last_obs = Y[-4:]  # Last 4 observations
-    >>> diff_forecast = ...  # Shape (8, 10, 5)
-    >>> level_forecast = integrate_seasonal_diff(last_obs, diff_forecast, 4)
-    """
-    history = list(np.asarray(last_obs))
-    result = []
-
-    for diff in np.asarray(diffs):
-        baseline = history[-period]
-        next_level = diff + baseline
-        history.append(next_level)
-        result.append(next_level)
-
-    return np.stack(result, axis=0)
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +379,7 @@ def forecast_dmfm(
     >>> print(result.forecast.shape)  # (8, p1, p2)
 
     >>> # Custom configuration
-    >>> config = ForecastConfig(k1=2, k2=2, P=2, seasonal_period=4)
+    >>> config = ForecastConfig(k1=2, k2=2, P=2)
     >>> result = forecast_dmfm(Y, steps=8, config=config)
 
     >>> # With shocks
@@ -517,48 +429,10 @@ def forecast_dmfm(
     if mask is None:
         mask = ~np.isnan(Y)
 
-    T_original = Y.shape[0]
-
-    # Apply seasonal differencing if requested
-    seasonal_adjusted = False
-    if config.seasonal_period is not None:
-        Y_fit = seasonal_difference(Y, config.seasonal_period)
-        mask_fit = mask[config.seasonal_period :] & mask[: -config.seasonal_period]
-        seasonal_adjusted = True
-        T_fit = Y_fit.shape[0]
-    else:
-        Y_fit = Y
-        mask_fit = mask
-        T_fit = T_original
-
-    # Adjust shock schedule for seasonal differencing
+    T_fit = Y.shape[0]
+    Y_fit = Y
+    mask_fit = mask
     shock_schedule_fit = config.shock_schedule
-    if seasonal_adjusted and config.shock_schedule is not None:
-        # When data is differenced, shock timing shifts by seasonal_period
-        # Create adjusted schedule with shifted start/end times
-        from ..DMFM.shocks import Shock, ShockSchedule
-
-        adjusted_shocks = []
-        for shock in config.shock_schedule.shocks:
-            # Shift timing back by seasonal_period
-            new_start = max(0, shock.start_t - config.seasonal_period)
-            new_end = None
-            if shock.end_t is not None:
-                new_end = max(0, shock.end_t - config.seasonal_period)
-            adjusted = Shock(
-                name=shock.name,
-                start_t=new_start,
-                end_t=new_end,
-                level=shock.level,
-                scope=shock.scope,
-                cantons=shock.cantons,
-                categories=shock.categories,
-                decay_type=shock.decay_type,
-                decay_rate=shock.decay_rate,
-                fixed_effect=shock.fixed_effect,
-            )
-            adjusted_shocks.append(adjusted)
-        shock_schedule_fit = ShockSchedule(adjusted_shocks)
 
     # Fit model with shocks if provided
     model, em_result = _fit_dmfm_with_shocks(
@@ -640,16 +514,20 @@ def forecast_dmfm(
     fcst = np.stack(fcst, axis=0)
     fcst_factors = np.stack(fcst_factors, axis=0)
 
-    # Integrate seasonal differences if applied
-    if seasonal_adjusted:
-        last_obs = Y[-config.seasonal_period :]
-        fcst = integrate_seasonal_diff(last_obs, fcst, config.seasonal_period)
+    # Level adjustment: ensure forecast connects smoothly to last observation
+    # This corrects for any gap between model fit and actual data at forecast origin
+    Y_last_actual = Y_fit[-1]  # Last actual observation
+    Y_last_fitted = model.R @ model.F[-1] @ model.C.T  # Model's fitted value at T
+    level_adjustment = Y_last_actual - Y_last_fitted
+    # Only adjust where we have valid observations (not NaN)
+    valid_mask = ~np.isnan(level_adjustment)
+    level_adjustment = np.where(valid_mask, level_adjustment, 0.0)
+    fcst = fcst + level_adjustment  # Add adjustment to all forecast steps
 
     return ForecastResult(
         forecast=fcst,
         model=model,
         config=config,
-        seasonal_adjusted=seasonal_adjusted,
         shock_effects=shock_effects,
         forecast_factors=fcst_factors,
     )

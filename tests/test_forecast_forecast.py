@@ -1,7 +1,7 @@
 """Tests for KPOKPCH.forecast.forecast module.
 
 Tests cover ForecastConfig, ForecastResult, forecasting functions,
-and utility functions for seasonal differencing and period generation.
+and utility functions for period generation.
 """
 
 import numpy as np
@@ -11,8 +11,6 @@ from KPOKPCH.forecast import (
     forecast_dmfm,
     ForecastConfig,
     ForecastResult,
-    seasonal_difference,
-    integrate_seasonal_diff,
     generate_future_periods,
     compute_q4_growth,
     canton_forecast,
@@ -32,7 +30,6 @@ class TestForecastConfig:
         assert config.k1 == 1
         assert config.k2 == 1
         assert config.P == 1
-        assert config.seasonal_period is None
         assert config.max_iter == 50
         assert config.tol == 1e-4
         assert config.diagonal_idiosyncratic is False
@@ -46,7 +43,6 @@ class TestForecastConfig:
             k1=3,
             k2=2,
             P=2,
-            seasonal_period=4,
             max_iter=100,
             tol=1e-6,
             diagonal_idiosyncratic=True,
@@ -57,7 +53,6 @@ class TestForecastConfig:
         assert config.k1 == 3
         assert config.k2 == 2
         assert config.P == 2
-        assert config.seasonal_period == 4
         assert config.max_iter == 100
         assert config.tol == 1e-6
         assert config.diagonal_idiosyncratic is True
@@ -83,136 +78,11 @@ class TestForecastResult:
             forecast=forecast,
             model=initialized_model,
             config=config,
-            seasonal_adjusted=True,
         )
 
         assert result.forecast.shape == (8, 4, 3)
         assert result.model is initialized_model
         assert result.config is config
-        assert result.seasonal_adjusted is True
-
-
-# ---------------------------------------------------------------------------
-# seasonal_difference tests
-# ---------------------------------------------------------------------------
-
-
-class TestSeasonalDifference:
-    """Tests for seasonal_difference function."""
-
-    def test_basic_differencing(self, rng):
-        """Test basic seasonal differencing."""
-        T, p1, p2 = 20, 4, 3
-        Y = rng.normal(size=(T, p1, p2))
-
-        Y_diff = seasonal_difference(Y, period=4)
-
-        assert Y_diff.shape == (T - 4, p1, p2)
-
-    def test_difference_calculation(self, rng):
-        """Test that differences are calculated correctly."""
-        T, p1, p2 = 20, 4, 3
-        Y = rng.normal(size=(T, p1, p2))
-
-        Y_diff = seasonal_difference(Y, period=4)
-
-        # Verify calculation
-        expected = Y[4:] - Y[:-4]
-        np.testing.assert_allclose(Y_diff, expected)
-
-    def test_period_1(self, rng):
-        """Test differencing with period 1."""
-        T, p1, p2 = 20, 4, 3
-        Y = rng.normal(size=(T, p1, p2))
-
-        Y_diff = seasonal_difference(Y, period=1)
-
-        assert Y_diff.shape == (T - 1, p1, p2)
-        expected = Y[1:] - Y[:-1]
-        np.testing.assert_allclose(Y_diff, expected)
-
-    def test_invalid_period_raises(self, rng):
-        """Test that invalid period raises ValueError."""
-        Y = rng.normal(size=(20, 4, 3))
-
-        with pytest.raises(ValueError, match="period must be between"):
-            seasonal_difference(Y, period=0)
-
-        with pytest.raises(ValueError, match="period must be between"):
-            seasonal_difference(Y, period=-1)
-
-        with pytest.raises(ValueError, match="period must be between"):
-            seasonal_difference(Y, period=20)
-
-    def test_non_3d_raises(self, rng):
-        """Test that non-3D input raises ValueError."""
-        Y_2d = rng.normal(size=(20, 4))
-
-        with pytest.raises(ValueError, match="must be 3D array"):
-            seasonal_difference(Y_2d, period=4)
-
-
-# ---------------------------------------------------------------------------
-# integrate_seasonal_diff tests
-# ---------------------------------------------------------------------------
-
-
-class TestIntegrateSeasonalDiff:
-    """Tests for integrate_seasonal_diff function."""
-
-    def test_integration_shape(self, rng):
-        """Test that integration returns correct shape."""
-        p1, p2 = 4, 3
-        period = 4
-        steps = 8
-
-        last_obs = rng.normal(size=(period, p1, p2))
-        diffs = rng.normal(size=(steps, p1, p2))
-
-        levels = integrate_seasonal_diff(last_obs, diffs, period)
-
-        assert levels.shape == (steps, p1, p2)
-
-    def test_integration_calculation(self):
-        """Test that integration is calculated correctly."""
-        p1, p2 = 2, 2
-        period = 2
-
-        # Simple test case
-        last_obs = np.array([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
-        diffs = np.array([[[1.0, 1.0], [1.0, 1.0]], [[2.0, 2.0], [2.0, 2.0]]])
-
-        levels = integrate_seasonal_diff(last_obs, diffs, period)
-
-        # First step: diff + last_obs[-2] = 1 + 1 = 2 (for first element)
-        assert levels.shape == (2, p1, p2)
-        # First level = diff[0] + last_obs[0]
-        expected_first = diffs[0] + last_obs[0]
-        np.testing.assert_allclose(levels[0], expected_first)
-
-    def test_roundtrip(self, rng):
-        """Test that difference then integrate recovers original (approximately)."""
-        T, p1, p2 = 20, 4, 3
-        period = 4
-
-        # Generate deterministic data with trend
-        Y = np.zeros((T, p1, p2))
-        for t in range(T):
-            Y[t] = t * np.ones((p1, p2))
-
-        # Difference
-        Y_diff = seasonal_difference(Y, period)
-
-        # Take "forecasts" from actual differences
-        steps = 4
-        diff_fcst = Y_diff[-steps:]
-        last_obs = Y[-steps - period : -steps]
-
-        # Integrate back - should recover something close to original trajectory
-        levels = integrate_seasonal_diff(last_obs, diff_fcst, period)
-
-        # Should match the actual values
-        np.testing.assert_allclose(levels, Y[-steps:])
 
 
 # ---------------------------------------------------------------------------
@@ -387,57 +257,6 @@ class TestForecastDMFM:
         )
 
         assert not np.isnan(result.forecast).any()
-
-
-# ---------------------------------------------------------------------------
-# forecast_dmfm with seasonal differencing tests
-# ---------------------------------------------------------------------------
-
-
-class TestForecastDMFMSeasonal:
-    """Tests for forecast_dmfm with seasonal differencing."""
-
-    @pytest.fixture
-    def seasonal_data(self, rng):
-        """Generate data with seasonal pattern."""
-        T, p1, p2 = 24, 4, 3  # 6 years of quarterly data
-        # Generate with seasonal pattern
-        Y = np.zeros((T, p1, p2))
-        for t in range(T):
-            seasonal = np.sin(2 * np.pi * t / 4)  # Quarterly seasonality
-            trend = 0.1 * t
-            Y[t] = trend + seasonal + 0.1 * rng.normal(size=(p1, p2))
-
-        mask = np.ones_like(Y, dtype=bool)
-        return Y, mask
-
-    def test_seasonal_adjustment_applied(self, seasonal_data):
-        """Test that seasonal adjustment is applied."""
-        Y, mask = seasonal_data
-        config = ForecastConfig(k1=1, k2=1, seasonal_period=4, max_iter=3)
-
-        result = forecast_dmfm(Y, steps=4, config=config, mask=mask)
-
-        assert result.seasonal_adjusted is True
-
-    def test_seasonal_forecast_shape(self, seasonal_data):
-        """Test forecast shape with seasonal differencing."""
-        Y, mask = seasonal_data
-        config = ForecastConfig(k1=1, k2=1, seasonal_period=4, max_iter=3)
-
-        result = forecast_dmfm(Y, steps=4, config=config, mask=mask)
-
-        # Shape should be (steps, p1, p2)
-        assert result.forecast.shape == (4, Y.shape[1], Y.shape[2])
-
-    def test_no_seasonal_adjustment(self, seasonal_data):
-        """Test that no seasonal adjustment when period is None."""
-        Y, mask = seasonal_data
-        config = ForecastConfig(k1=1, k2=1, seasonal_period=None, max_iter=3)
-
-        result = forecast_dmfm(Y, steps=4, config=config, mask=mask)
-
-        assert result.seasonal_adjusted is False
 
 
 # ---------------------------------------------------------------------------

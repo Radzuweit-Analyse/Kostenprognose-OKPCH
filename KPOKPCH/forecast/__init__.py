@@ -3,8 +3,6 @@ from .forecast import (
     canton_forecast,
     ForecastConfig,
     ForecastResult,
-    seasonal_difference,
-    integrate_seasonal_diff,
     load_cost_matrix,
     generate_future_periods,
     compute_q4_growth,
@@ -28,9 +26,6 @@ __all__ = [
     "canton_forecast",
     "ForecastConfig",
     "ForecastResult",
-    # Seasonal utilities
-    "seasonal_difference",
-    "integrate_seasonal_diff",
     # Data utilities
     "load_cost_matrix",
     "generate_future_periods",

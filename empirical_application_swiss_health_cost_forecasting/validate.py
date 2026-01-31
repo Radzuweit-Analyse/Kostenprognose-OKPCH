@@ -3,9 +3,7 @@
 This script performs comprehensive validation of the DMFM model using
 rolling window validation with automatic rank selection at each window.
 
-Includes time-aware shock handling:
-- COVID-19 shock is only included when training data extends past 2020Q2
-  (cannot predict a shock before it happens)
+Uses annualized data (rolling 4-quarter sums) for stability.
 """
 
 import argparse
@@ -25,9 +23,35 @@ from KPOKPCH.forecast.validation import (
     rolling_window_validate,
     average_validation_results,
 )
-from KPOKPCH.DMFM import select_rank, ShockSchedule
+from KPOKPCH.DMFM import select_rank
 
-from shocks_config import create_covid_schedule, COVID_START_T
+from shocks_config import create_intervention_schedule
+
+# Intervention schedule for deterministic policy changes (e.g., ZG 2026)
+INTERVENTION_SCHEDULE = create_intervention_schedule()
+
+
+def annualize(Y: np.ndarray, window: int = 4) -> np.ndarray:
+    """Compute rolling sum over trailing window (annualization).
+
+    Parameters
+    ----------
+    Y : np.ndarray
+        Data of shape (T, ...).
+    window : int
+        Rolling window size (default 4 for quarterly -> annual).
+
+    Returns
+    -------
+    np.ndarray
+        Rolling sums of shape (T - window + 1, ...).
+    """
+    T = Y.shape[0]
+    result = np.zeros((T - window + 1,) + Y.shape[1:])
+    for t in range(T - window + 1):
+        result[t] = np.nansum(Y[t : t + window], axis=0)
+    return result
+
 
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_FILE = "health_costs_tensor.csv"
@@ -47,7 +71,7 @@ def parse_args():
     parser.add_argument(
         "--k2-range",
         type=str,
-        default="1,6",
+        default="1,4",
         help="Range of k2 values to search (e.g., '1,8')",
     )
     parser.add_argument(
@@ -76,8 +100,58 @@ def parse_args():
     return parser.parse_args()
 
 
+def apply_interventions_to_results(
+    results: list[ValidationResult],
+    min_train_size: int,
+    window_type: str = "expanding",
+    window_size: int | None = None,
+) -> list[ValidationResult]:
+    """Apply intervention schedule to validation forecasts.
+
+    Modifies forecasts in-place to reflect deterministic policy changes
+    (e.g., ZG hospital policy setting costs to 0 in 2026).
+
+    Parameters
+    ----------
+    results : list[ValidationResult]
+        Validation results with forecasts to modify.
+    min_train_size : int
+        Minimum training size used in validation.
+    window_type : str
+        "expanding" or "rolling".
+    window_size : int, optional
+        Window size for rolling validation.
+
+    Returns
+    -------
+    list[ValidationResult]
+        Same results with interventions applied to forecasts.
+    """
+    if len(INTERVENTION_SCHEDULE) == 0:
+        return results
+
+    for i, result in enumerate(results):
+        # Reconstruct train_end for this result
+        if window_type == "expanding":
+            train_end = min_train_size + i
+        else:  # rolling
+            train_end = (window_size or min_train_size) + i
+
+        steps = result.forecasts.shape[0]
+
+        # Apply interventions to each forecast step
+        for h in range(steps):
+            t = train_end + h
+            result.forecasts[h] = INTERVENTION_SCHEDULE.apply(result.forecasts[h], t)
+
+        # Recompute errors after intervention
+        result.errors[:] = result.forecasts - result.actuals
+
+    return results
+
+
 def load_and_preprocess_data():
-    """Load and preprocess health cost data (same as main.py)."""
+    """Load and preprocess health cost data with annualization."""
     csv_path = BASE_DIR / INPUT_FILE
     periods, cantons, groups, data = load_cost_matrix(str(csv_path))
 
@@ -102,21 +176,23 @@ def load_and_preprocess_data():
         Y = Y[:, :, keep_indices]
         groups = [groups[i] for i in keep_indices]
 
-    return periods, cantons, groups, Y, scale
+    # Annualize: rolling 4-quarter sums
+    Y_annual = annualize(Y, window=4)
+    # Period labels: use the end quarter of each window
+    periods_annual = periods[3:]
+
+    return periods_annual, cantons, groups, Y_annual, scale
 
 
 def make_config_selector(
     k1_range: tuple[int, int],
     k2_range: tuple[int, int],
-    seasonal_period: int = 4,
     verbose: bool = False,
 ):
     """Create a config selector function for dynamic rank selection.
 
-    Returns a callable that selects optimal k1, k2 using BIC on seasonal
-    differences of the training data. Also handles shock schedules in a
-    time-aware manner: COVID-19 shock is only included when the training
-    window extends past 2020Q2.
+    Returns a callable that selects optimal k1, k2 using BIC on first
+    differences of the (already annualized) training data.
 
     Parameters
     ----------
@@ -124,8 +200,6 @@ def make_config_selector(
         Range of k1 values to search (min, max).
     k2_range : tuple[int, int]
         Range of k2 values to search (min, max).
-    seasonal_period : int, default 4
-        Seasonal differencing period.
     verbose : bool, default False
         Print selection details.
 
@@ -140,19 +214,19 @@ def make_config_selector(
     ) -> ForecastConfig:
         training_end_t = Y_train.shape[0]
 
-        # Apply seasonal differencing for rank selection
-        if training_end_t <= seasonal_period:
-            # Not enough data for seasonal differencing, use defaults
+        # Need at least 2 observations for first differences
+        if training_end_t <= 2:
             return ForecastConfig(
                 k1=k1_range[0],
                 k2=k2_range[0],
                 P=1,
-                seasonal_period=seasonal_period,
+                i1_factors=True,  # Factors follow random walk (for trending data)
                 max_iter=100,
                 verbose=verbose,
             )
 
-        Y_diff = np.diff(Y_train, n=seasonal_period, axis=0)
+        # First differences of annualized data for rank selection
+        Y_diff = np.diff(Y_train, n=1, axis=0)
         mask_diff = ~np.isnan(Y_diff)
 
         # Select rank using BIC
@@ -171,21 +245,13 @@ def make_config_selector(
         if verbose:
             print(f"    Selected k1={result.best_k1}, k2={result.best_k2}")
 
-        # Create shock schedule only if training data includes post-COVID period
-        # COVID started at t=17 (2020Q2), so include if training extends past that
-        shock_schedule = create_covid_schedule(training_end_t)
-
-        if verbose and shock_schedule is not None:
-            print(f"    Including COVID shock (training includes post-2020Q2 data)")
-
         return ForecastConfig(
             k1=result.best_k1,
             k2=result.best_k2,
             P=1,
-            seasonal_period=seasonal_period,
+            i1_factors=True,  # Factors follow random walk (for trending data)
             max_iter=100,
             verbose=verbose,
-            shock_schedule=shock_schedule,
         )
 
     return config_selector
@@ -728,16 +794,17 @@ def main():
     k1_range = (k1_min, k1_max)
     k2_range = (k2_min, k2_max)
 
-    # Load data
+    # Load data (already annualized)
     print("Loading data...")
     periods, cantons, groups, Y, scale = load_and_preprocess_data()
-    print(f"Data: {len(periods)} periods, {len(cantons)} cantons, {len(groups)} groups")
+    print(
+        f"Annualized data: {len(periods)} periods, {len(cantons)} cantons, {len(groups)} groups"
+    )
 
     # Create config selector for dynamic rank selection
     config_selector = make_config_selector(
         k1_range=k1_range,
         k2_range=k2_range,
-        seasonal_period=4,
         verbose=args.verbose,
     )
     print(f"Rank selection: k1 in [{k1_min},{k1_max}], k2 in [{k2_min},{k2_max}]")
@@ -754,6 +821,16 @@ def main():
     holdout_result = out_of_sample_validate(
         Y, holdout_config, config_selector=config_selector
     )
+
+    # Apply interventions to holdout forecast
+    T = Y.shape[0]
+    train_end = T - args.steps
+    for h in range(args.steps):
+        t = train_end + h
+        holdout_result.forecasts[h] = INTERVENTION_SCHEDULE.apply(
+            holdout_result.forecasts[h], t
+        )
+    holdout_result.errors[:] = holdout_result.forecasts - holdout_result.actuals
 
     print(f"Hold-out validation ({args.steps} steps):")
     if holdout_result.forecast_config:
@@ -783,6 +860,10 @@ def main():
     )
     expanding_results = rolling_window_validate(
         Y, expanding_config, config_selector=config_selector
+    )
+    # Apply interventions to expanding window forecasts
+    apply_interventions_to_results(
+        expanding_results, args.min_train, window_type="expanding"
     )
     expanding_avg = average_validation_results(expanding_results)
 
@@ -831,6 +912,10 @@ def main():
     )
     rolling_results = rolling_window_validate(
         Y, rolling_config, config_selector=config_selector
+    )
+    # Apply interventions to rolling window forecasts
+    apply_interventions_to_results(
+        rolling_results, args.min_train, window_type="rolling", window_size=window_size
     )
     rolling_avg = average_validation_results(rolling_results)
 

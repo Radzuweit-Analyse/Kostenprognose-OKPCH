@@ -468,8 +468,9 @@ class EMEstimatorDMFM:
             is_kronecker,
         )
 
-        # Update drift (skipped for I(1) factors - random walk has no drift)
-        C_drift_new = _update_drift(F, A_new, B_new, self.model.P, skip=is_i1)
+        # Update drift (for I(1) factors, this gives random walk WITH drift,
+        # which is needed for forecasting trending data)
+        C_drift_new = _update_drift(F, A_new, B_new, self.model.P, skip=False)
 
         # Update innovations
         P_new, Q_new = _update_innovations(
@@ -835,13 +836,19 @@ def _update_drift(
     P : int
         MAR order.
     skip : bool, default False
-        If True, return zeros (used for I(1) factors where random walk
-        has no drift per Barigozzi & Trapin 2025 Section 6).
+        If True, return zeros (not recommended for trending data).
 
     Returns
     -------
     np.ndarray
         Estimated drift matrix of shape (k1, k2).
+
+    Notes
+    -----
+    For I(1) factors (random walk), drift is still estimated to capture
+    trends in the data. This gives a random walk WITH drift model:
+        F_t = F_{t-1} + C_drift + error
+    which is appropriate for forecasting trending time series.
     """
     Tn, k1, k2 = F.shape
 

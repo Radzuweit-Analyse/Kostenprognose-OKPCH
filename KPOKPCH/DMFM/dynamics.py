@@ -22,9 +22,9 @@ class DynamicsConfig:
         Whether to estimate dynamics in vectorized Kronecker form only.
     i1_factors : bool, default False
         Whether factors are integrated of order 1 (I(1)).
-        When True, implements Barigozzi & Trapin (2025) Section 6:
+        When True:
         - Dynamics A, B are fixed at identity (random walk)
-        - No drift is estimated
+        - Drift is still estimated (random walk WITH drift for trending data)
         - Kalman filter uses diffuse initial state
         - Estimation is done in levels (no differencing needed)
     """

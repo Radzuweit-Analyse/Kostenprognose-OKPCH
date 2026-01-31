@@ -366,7 +366,7 @@ def rolling_window_validate(
     ...     from KPOKPCH.DMFM import select_rank
     ...     Y_diff = np.diff(Y_train, n=4, axis=0)
     ...     result = select_rank(Y_diff, k1_range=(1,2), k2_range=(1,6), criterion="bic")
-    ...     return ForecastConfig(k1=result.best_k1, k2=result.best_k2, P=1, seasonal_period=4)
+    ...     return ForecastConfig(k1=result.best_k1, k2=result.best_k2, P=1)
     >>> results = rolling_window_validate(Y, val_config, config_selector=select_config)
     """
     Y = np.asarray(Y, dtype=float)
@@ -494,7 +494,6 @@ def out_of_sample_rmse(
     Y: np.ndarray,
     steps: int,
     mask: np.ndarray | None = None,
-    seasonal_period: int | None = None,
     k1: int = 1,
     k2: int = 1,
     P: int = 1,
@@ -512,8 +511,6 @@ def out_of_sample_rmse(
         Number of forecast steps to evaluate.
     mask : np.ndarray, optional
         Boolean mask for missing values.
-    seasonal_period : int or None, optional
-        Seasonal differencing period.
     k1, k2 : int, default 1
         Number of factors.
     P : int, default 1
@@ -534,7 +531,6 @@ def out_of_sample_rmse(
         k1=k1,
         k2=k2,
         P=P,
-        seasonal_period=seasonal_period,
     )
 
     result = out_of_sample_validate(Y, val_config, forecast_config, mask)

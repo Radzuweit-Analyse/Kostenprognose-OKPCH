@@ -522,7 +522,6 @@ class TestOutOfSampleRMSE:
             k1=2,
             k2=2,
             P=1,
-            seasonal_period=None,
         )
 
         assert np.isfinite(rmse)

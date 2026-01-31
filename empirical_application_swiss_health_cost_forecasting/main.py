@@ -1,7 +1,7 @@
 """Forecast Swiss health costs using DMFM.
 
-Includes shock/intervention handling:
-- COVID-19 (2020Q2-Q3): Temporary disruption modeled as factor-level shock
+Uses annualized data (rolling 4-quarter sums) for stability.
+Includes intervention handling:
 - ZG hospital policy (2026Q1+): ZG pays hospital stays directly (costs = 0)
 """
 
@@ -17,11 +17,11 @@ from KPOKPCH.forecast import (
     ForecastConfig,
     forecast_dmfm,
 )
-from KPOKPCH.DMFM import select_rank, print_selection_summary, ShockSchedule
+from KPOKPCH.DMFM import select_rank, print_selection_summary
 
 from shocks_config import (
-    create_covid_shock,
-    apply_zg_policy_to_forecast,
+    factory,
+    create_intervention_schedule,
     get_zg_policy_info,
 )
 
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument(
         "--k2-range",
         type=str,
-        default="2,8",
+        default="1,4",
         help="Range of k2 values to search (e.g., '1,4')",
     )
     parser.add_argument(
@@ -60,8 +60,8 @@ def parse_args():
     parser.add_argument(
         "--k2",
         type=int,
-        default=4,
-        help="Number of column factors (default: 4)",
+        default=1,
+        help="Number of column factors (default: 1)",
     )
     parser.add_argument(
         "--verbose",
@@ -69,6 +69,28 @@ def parse_args():
         help="Print verbose output during fitting",
     )
     return parser.parse_args()
+
+
+def annualize(Y: np.ndarray, window: int = 4) -> np.ndarray:
+    """Compute rolling sum over trailing window (annualization).
+
+    Parameters
+    ----------
+    Y : np.ndarray
+        Data of shape (T, ...).
+    window : int
+        Rolling window size (default 4 for quarterly -> annual).
+
+    Returns
+    -------
+    np.ndarray
+        Rolling sums of shape (T - window + 1, ...).
+    """
+    T = Y.shape[0]
+    result = np.zeros((T - window + 1,) + Y.shape[1:])
+    for t in range(T - window + 1):
+        result[t] = np.nansum(Y[t : t + window], axis=0)
+    return result
 
 
 def main():
@@ -85,7 +107,9 @@ def main():
         cantons = [c for i, c in enumerate(cantons) if i != ch_idx]
         data = np.delete(data, ch_idx, axis=1)
 
-    print(f"Data: {len(periods)} periods, {len(cantons)} cantons, {len(groups)} groups")
+    print(
+        f"Raw data: {len(periods)} periods, {len(cantons)} cantons, {len(groups)} groups"
+    )
 
     # Scale to thousands
     scale = 1000.0
@@ -103,6 +127,15 @@ def main():
         groups = [groups[i] for i in keep_indices]
         data = data[:, :, keep_indices]
 
+    # Annualize: rolling 4-quarter sums
+    # Each observation represents trailing 4 quarters (1 year)
+    Y_annual = annualize(Y, window=4)
+    data_annual = annualize(data, window=4)
+    # Period labels: use the end quarter of each window
+    periods_annual = periods[3:]  # First annualized obs ends at period[3]
+
+    print(f"Annualized data: {len(periods_annual)} periods")
+
     # Determine rank
     verbose = args.verbose
 
@@ -112,7 +145,8 @@ def main():
 
         print(f"Selecting rank (k1: [{k1_min},{k1_max}], k2: [{k2_min},{k2_max}])...")
 
-        Y_diff = np.diff(Y, n=4, axis=0)
+        # Use first differences of annualized data for rank selection
+        Y_diff = np.diff(Y_annual, n=1, axis=0)
         mask_diff = ~np.isnan(Y_diff)
 
         selection_result = select_rank(
@@ -136,73 +170,69 @@ def main():
         k1, k2 = args.k1, args.k2
         print(f"Using: k1={k1}, k2={k2}")
 
-    # Create COVID shock schedule (data includes 2020Q2-Q3)
-    covid_shock = create_covid_shock()
-    shock_schedule = ShockSchedule([covid_shock])
-    print(
-        f"Including shock: {covid_shock.name} (t={covid_shock.start_t}-{covid_shock.end_t})"
-    )
-
-    # Forecast with shock handling
+    # Forecast on annualized data
+    # i1_factors=True treats factors as random walk (appropriate for trending data)
     config = ForecastConfig(
         k1=k1,
         k2=k2,
         P=1,
-        seasonal_period=4,
+        i1_factors=True,  # Factors follow random walk (for non-stationary annualized data)
         max_iter=100,
         verbose=verbose,
-        shock_schedule=shock_schedule,
     )
 
-    steps = 4  # One year ahead
-    result = forecast_dmfm(Y, steps=steps, config=config)
-
-    # Report shock effects if estimated
-    if result.shock_effects is not None:
-        if result.shock_effects.factor_effects is not None:
-            print(
-                f"Estimated COVID factor effect magnitude: "
-                f"{np.linalg.norm(result.shock_effects.factor_effects[0]):.4f}"
-            )
+    steps = 4  # Four quarters ahead (each is an annualized value)
+    result = forecast_dmfm(Y_annual, steps=steps, config=config)
 
     fcst = result.forecast * scale
-    future_periods = generate_future_periods(periods[-1], steps)
+    future_periods = generate_future_periods(periods_annual[-1], steps)
 
     # Apply ZG hospital policy: ZG séjours = 0 for 2026 periods
+    # Note: For annualized data, intervention affects the full annual sum
     zg_policy = get_zg_policy_info()
-    fcst = apply_zg_policy_to_forecast(fcst, future_periods[0], cantons, groups)
+    intervention_schedule = create_intervention_schedule()
+    for h, period in enumerate(future_periods):
+        t = factory.period_to_index(period)
+        fcst[h] = intervention_schedule.apply(fcst[h], t)
     print(
         f"Applied policy: {zg_policy['name']} ({zg_policy['start_period']}-{zg_policy['end_period']})"
     )
 
     # Add CH as aggregate (27th canton)
-    data_ch = np.nansum(data, axis=1, keepdims=True)
+    data_ch = np.nansum(data_annual, axis=1, keepdims=True)
     fcst_ch = np.sum(fcst, axis=1, keepdims=True)
-    data_with_ch = np.concatenate([data, data_ch], axis=1)
+    data_with_ch = np.concatenate([data_annual, data_ch], axis=1)
     fcst_with_ch = np.concatenate([fcst, fcst_ch], axis=1)
     cantons_with_ch = cantons + ["CH"]
 
-    # Table 1: Canton x Group (detailed)
+    # Table 1: Canton x Group (detailed) - annualized values
     save_canton_group_table(
-        periods, data_with_ch, future_periods, fcst_with_ch, cantons_with_ch, groups
+        periods_annual,
+        data_with_ch,
+        future_periods,
+        fcst_with_ch,
+        cantons_with_ch,
+        groups,
     )
 
     # Aggregate over groups for canton totals
     data_total = np.nansum(data_with_ch, axis=2)
     fcst_total = np.sum(fcst_with_ch, axis=2)
 
-    # Table 2: Canton totals
+    # Table 2: Canton totals - annualized values
     save_canton_total_table(
-        periods, data_total, future_periods, fcst_total, cantons_with_ch
+        periods_annual, data_total, future_periods, fcst_total, cantons_with_ch
     )
 
-    # Table 3: YoY growth rates
+    # Table 3: YoY growth rates (comparing annualized values 4 quarters apart)
     save_yoy_growth_table(
-        periods, data_total, future_periods, fcst_total, cantons_with_ch
+        periods_annual, data_total, future_periods, fcst_total, cantons_with_ch
     )
 
     # Plot CH forecast
-    plot_ch_forecast(periods, data_total, future_periods, fcst_total, cantons_with_ch)
+    plot_ch_forecast(
+        periods_annual, data_total, future_periods, fcst_total, cantons_with_ch
+    )
 
     print("Done.")
 

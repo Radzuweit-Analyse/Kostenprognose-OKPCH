@@ -1,21 +1,26 @@
 """Shock and intervention modeling for the DMFM.
 
-This module provides tools for incorporating known shocks (interventions) into
-the Dynamic Matrix Factor Model. Shocks can represent events like:
-- COVID-19 pandemic effects (temporary, global)
-- Policy changes (permanent or temporary, targeted)
-- Regional interventions (canton-specific)
-- Structural breaks
+This module provides tools for incorporating known events into the Dynamic
+Matrix Factor Model. It distinguishes between two types of adjustments:
 
-Shocks can enter at the factor level (affecting latent dynamics) or at the
-observation level (directly affecting specific canton-category combinations).
+**Shocks** (stochastic):
+    Unexpected events whose effects need to be estimated from data.
+    Examples: COVID-19 pandemic, financial crises, natural disasters.
+    Effects are additive and can decay over time.
+
+**Interventions** (deterministic):
+    Planned policy changes with known effects specified a priori.
+    Examples: ZG hospital policy (costs = 0), tariff reforms, regulatory changes.
+    Effects are exact: override, scale, or shift values.
+
+Both can be targeted globally or to specific rows/columns (e.g., cantons/categories).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Literal, Optional, Tuple
+from typing import Callable, List, Literal, Optional, Tuple, Union
 import numpy as np
 
 
@@ -588,6 +593,477 @@ class ShockEffects:
         if self.observation_effects is None or idx >= self.n_observation_shocks:
             return None
         return self.observation_effects[idx]
+
+
+# =============================================================================
+# Interventions (deterministic policy changes)
+# =============================================================================
+
+
+class InterventionType(str, Enum):
+    """Type of deterministic intervention."""
+
+    OVERRIDE = "override"  # Set to fixed value: Y[target] = value
+    SCALE = "scale"  # Multiply by factor: Y[target] *= factor
+    SHIFT = "shift"  # Add fixed amount: Y[target] += delta
+
+
+@dataclass
+class Intervention:
+    """Definition of a deterministic policy intervention.
+
+    Unlike shocks (whose effects are estimated), interventions have known
+    effects specified a priori. Use interventions for policy changes where
+    the impact is deterministic.
+
+    Parameters
+    ----------
+    name : str
+        Unique identifier for the intervention.
+    start_t : int
+        First affected time period (0-indexed).
+    end_t : int, optional
+        Last affected time period. If None, intervention is permanent.
+    intervention_type : InterventionType, default "override"
+        How the intervention modifies values.
+    value : float, optional
+        For OVERRIDE: the value to set. For SHIFT: the amount to add.
+    factor : float, optional
+        For SCALE: the multiplication factor.
+    rows : list[int], optional
+        Row indices affected. If None, affects all rows.
+    cols : list[int], optional
+        Column indices affected. If None, affects all columns.
+
+    Examples
+    --------
+    >>> # ZG hospital policy: set ZG × séjours to 0 for 2026
+    >>> zg_policy = Intervention(
+    ...     name="zg_hospital_2026",
+    ...     start_t=40,  # 2026Q1
+    ...     end_t=43,    # 2026Q4
+    ...     intervention_type=InterventionType.OVERRIDE,
+    ...     value=0.0,
+    ...     rows=[24],   # ZG canton index
+    ...     cols=[3],    # séjours category index
+    ... )
+
+    >>> # 10% cost reduction in ambulatory care
+    >>> tariff_cut = Intervention(
+    ...     name="tariff_reduction",
+    ...     start_t=48,
+    ...     end_t=None,  # Permanent
+    ...     intervention_type=InterventionType.SCALE,
+    ...     factor=0.9,
+    ...     cols=[2, 6],  # Ambulatory categories
+    ... )
+    """
+
+    name: str
+    start_t: int
+    end_t: Optional[int] = None
+    intervention_type: InterventionType = InterventionType.OVERRIDE
+    value: Optional[float] = None
+    factor: Optional[float] = None
+    rows: Optional[List[int]] = None
+    cols: Optional[List[int]] = None
+
+    def __post_init__(self) -> None:
+        """Validate intervention configuration."""
+        if isinstance(self.intervention_type, str):
+            self.intervention_type = InterventionType(self.intervention_type)
+
+        # Validate type-specific parameters
+        if self.intervention_type == InterventionType.OVERRIDE:
+            if self.value is None:
+                raise ValueError(
+                    f"Intervention '{self.name}' with OVERRIDE type requires 'value'"
+                )
+        elif self.intervention_type == InterventionType.SCALE:
+            if self.factor is None:
+                raise ValueError(
+                    f"Intervention '{self.name}' with SCALE type requires 'factor'"
+                )
+        elif self.intervention_type == InterventionType.SHIFT:
+            if self.value is None:
+                raise ValueError(
+                    f"Intervention '{self.name}' with SHIFT type requires 'value'"
+                )
+
+        # Validate time bounds
+        if self.end_t is not None and self.end_t < self.start_t:
+            raise ValueError(
+                f"end_t ({self.end_t}) must be >= start_t ({self.start_t})"
+            )
+
+    def is_active(self, t: int) -> bool:
+        """Check if intervention is active at time t."""
+        if t < self.start_t:
+            return False
+        if self.end_t is not None and t > self.end_t:
+            return False
+        return True
+
+    def build_target_mask(self, p1: int, p2: int) -> np.ndarray:
+        """Build binary mask indicating affected cells.
+
+        Parameters
+        ----------
+        p1 : int
+            Number of rows.
+        p2 : int
+            Number of columns.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean mask of shape (p1, p2).
+        """
+        mask = np.ones((p1, p2), dtype=bool)
+
+        if self.rows is not None:
+            row_mask = np.zeros(p1, dtype=bool)
+            for i in self.rows:
+                if 0 <= i < p1:
+                    row_mask[i] = True
+            mask &= row_mask[:, np.newaxis]
+
+        if self.cols is not None:
+            col_mask = np.zeros(p2, dtype=bool)
+            for j in self.cols:
+                if 0 <= j < p2:
+                    col_mask[j] = True
+            mask &= col_mask[np.newaxis, :]
+
+        return mask
+
+    def apply(self, Y: np.ndarray, t: int) -> np.ndarray:
+        """Apply intervention to observation matrix at time t.
+
+        Parameters
+        ----------
+        Y : np.ndarray
+            Observation matrix of shape (p1, p2).
+        t : int
+            Time period.
+
+        Returns
+        -------
+        np.ndarray
+            Modified observation matrix.
+        """
+        if not self.is_active(t):
+            return Y
+
+        Y_mod = Y.copy()
+        p1, p2 = Y.shape
+        mask = self.build_target_mask(p1, p2)
+
+        if self.intervention_type == InterventionType.OVERRIDE:
+            Y_mod[mask] = self.value
+        elif self.intervention_type == InterventionType.SCALE:
+            Y_mod[mask] *= self.factor
+        elif self.intervention_type == InterventionType.SHIFT:
+            Y_mod[mask] += self.value
+
+        return Y_mod
+
+    def __repr__(self) -> str:
+        """String representation."""
+        end_str = str(self.end_t) if self.end_t is not None else "inf"
+        return (
+            f"Intervention('{self.name}', t=[{self.start_t}, {end_str}], "
+            f"type={self.intervention_type.value})"
+        )
+
+
+@dataclass
+class InterventionSchedule:
+    """Collection of interventions.
+
+    Parameters
+    ----------
+    interventions : list[Intervention], optional
+        List of interventions. Defaults to empty list.
+    """
+
+    interventions: List[Intervention] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Validate intervention names are unique."""
+        names = [i.name for i in self.interventions]
+        if len(names) != len(set(names)):
+            raise ValueError("Intervention names must be unique")
+
+    def add(self, intervention: Intervention) -> None:
+        """Add an intervention to the schedule."""
+        if any(i.name == intervention.name for i in self.interventions):
+            raise ValueError(f"Intervention '{intervention.name}' already exists")
+        self.interventions.append(intervention)
+
+    def apply(self, Y: np.ndarray, t: int) -> np.ndarray:
+        """Apply all active interventions to observation matrix.
+
+        Parameters
+        ----------
+        Y : np.ndarray
+            Observation matrix of shape (p1, p2).
+        t : int
+            Time period.
+
+        Returns
+        -------
+        np.ndarray
+            Modified observation matrix with all interventions applied.
+        """
+        Y_mod = Y.copy()
+        for intervention in self.interventions:
+            Y_mod = intervention.apply(Y_mod, t)
+        return Y_mod
+
+    def __len__(self) -> int:
+        return len(self.interventions)
+
+    def __iter__(self):
+        return iter(self.interventions)
+
+    def __repr__(self) -> str:
+        names = [i.name for i in self.interventions]
+        return f"InterventionSchedule({len(self.interventions)} interventions: {names})"
+
+
+# =============================================================================
+# Factory for convenient creation with named dimensions
+# =============================================================================
+
+
+@dataclass
+class ScheduleFactory:
+    """Factory for creating shocks and interventions with named dimensions.
+
+    Provides convenience methods to create shocks and interventions using
+    period strings (e.g., "2020Q2") and dimension names (e.g., "ZG")
+    instead of numeric indices.
+
+    Parameters
+    ----------
+    base_period : str
+        The period corresponding to t=0 (e.g., "2016Q1").
+    row_names : list[str], optional
+        Names for rows (e.g., canton codes).
+    col_names : list[str], optional
+        Names for columns (e.g., cost group names).
+
+    Examples
+    --------
+    >>> factory = ScheduleFactory(
+    ...     base_period="2016Q1",
+    ...     row_names=["AG", "AI", ..., "ZH"],
+    ...     col_names=["Autres", "Hôpitaux (séjours)", ...],
+    ... )
+    >>> covid = factory.shock("covid", start="2020Q2", end="2020Q3")
+    >>> zg = factory.intervention(
+    ...     "zg_policy", start="2026Q1", end="2026Q4",
+    ...     rows=["ZG"], cols=["Hôpitaux (séjours)"],
+    ...     intervention_type="override", value=0.0,
+    ... )
+    """
+
+    base_period: str
+    row_names: Optional[List[str]] = None
+    col_names: Optional[List[str]] = None
+
+    def period_to_index(self, period: str) -> int:
+        """Convert period string to time index.
+
+        Supports formats: "2020Q2" (quarterly), "2020-03" (monthly).
+        """
+        base_year, base_sub = self._parse_period(self.base_period)
+        year, sub = self._parse_period(period)
+
+        # Detect format from base_period
+        if "Q" in self.base_period:
+            return (year - base_year) * 4 + (sub - base_sub)
+        else:
+            return (year - base_year) * 12 + (sub - base_sub)
+
+    def _parse_period(self, period: str) -> Tuple[int, int]:
+        """Parse period string into (year, sub-period)."""
+        if "Q" in period:
+            # Quarterly: "2020Q2"
+            year = int(period[:4])
+            quarter = int(period[-1])
+            return year, quarter
+        elif "-" in period:
+            # Monthly: "2020-03"
+            parts = period.split("-")
+            return int(parts[0]), int(parts[1])
+        else:
+            raise ValueError(f"Unknown period format: {period}")
+
+    def _resolve_rows(self, names: Optional[List[str]]) -> Optional[List[int]]:
+        """Convert row names to indices."""
+        if names is None:
+            return None
+        if self.row_names is None:
+            raise ValueError("Cannot resolve row names: row_names not configured")
+        indices = []
+        for name in names:
+            if name not in self.row_names:
+                raise ValueError(f"Unknown row name: {name}")
+            indices.append(self.row_names.index(name))
+        return indices
+
+    def _resolve_cols(self, names: Optional[List[str]]) -> Optional[List[int]]:
+        """Convert column names to indices."""
+        if names is None:
+            return None
+        if self.col_names is None:
+            raise ValueError("Cannot resolve col names: col_names not configured")
+        indices = []
+        for name in names:
+            if name not in self.col_names:
+                raise ValueError(f"Unknown col name: {name}")
+            indices.append(self.col_names.index(name))
+        return indices
+
+    def shock(
+        self,
+        name: str,
+        start: Union[int, str],
+        end: Optional[Union[int, str]] = None,
+        level: ShockLevel = ShockLevel.FACTOR,
+        scope: Optional[ShockScope] = None,
+        rows: Optional[List[str]] = None,
+        cols: Optional[List[str]] = None,
+        decay_type: DecayType = DecayType.STEP,
+        decay_rate: Optional[float] = None,
+        fixed_effect: Optional[np.ndarray] = None,
+    ) -> Shock:
+        """Create a shock with period strings and named dimensions.
+
+        Parameters
+        ----------
+        name : str
+            Unique identifier.
+        start : int or str
+            Start period (index or string like "2020Q2").
+        end : int or str, optional
+            End period.
+        level : ShockLevel
+            Factor or observation level.
+        scope : ShockScope, optional
+            Auto-detected from rows/cols if not provided.
+        rows : list[str], optional
+            Row names (e.g., ["ZG", "ZH"]).
+        cols : list[str], optional
+            Column names.
+        decay_type : DecayType
+            How shock intensity decays.
+        decay_rate : float, optional
+            Decay parameter for exponential decay.
+        fixed_effect : np.ndarray, optional
+            Pre-specified effect matrix.
+
+        Returns
+        -------
+        Shock
+        """
+        # Convert periods to indices
+        start_t = self.period_to_index(start) if isinstance(start, str) else start
+        end_t = None
+        if end is not None:
+            end_t = self.period_to_index(end) if isinstance(end, str) else end
+
+        # Resolve names to indices
+        row_indices = self._resolve_rows(rows)
+        col_indices = self._resolve_cols(cols)
+
+        # Auto-detect scope if not provided
+        if scope is None:
+            if row_indices is None and col_indices is None:
+                scope = ShockScope.GLOBAL
+            elif row_indices is not None and col_indices is None:
+                scope = ShockScope.CANTON
+            elif row_indices is None and col_indices is not None:
+                scope = ShockScope.CATEGORY
+            else:
+                scope = ShockScope.CANTON_CATEGORY
+
+        return Shock(
+            name=name,
+            start_t=start_t,
+            end_t=end_t,
+            level=level,
+            scope=scope,
+            cantons=row_indices,
+            categories=col_indices,
+            decay_type=decay_type,
+            decay_rate=decay_rate,
+            fixed_effect=fixed_effect,
+        )
+
+    def intervention(
+        self,
+        name: str,
+        start: Union[int, str],
+        end: Optional[Union[int, str]] = None,
+        intervention_type: InterventionType = InterventionType.OVERRIDE,
+        value: Optional[float] = None,
+        factor: Optional[float] = None,
+        rows: Optional[List[str]] = None,
+        cols: Optional[List[str]] = None,
+    ) -> Intervention:
+        """Create an intervention with period strings and named dimensions.
+
+        Parameters
+        ----------
+        name : str
+            Unique identifier.
+        start : int or str
+            Start period.
+        end : int or str, optional
+            End period.
+        intervention_type : InterventionType
+            OVERRIDE, SCALE, or SHIFT.
+        value : float, optional
+            Value for OVERRIDE or SHIFT.
+        factor : float, optional
+            Factor for SCALE.
+        rows : list[str], optional
+            Row names.
+        cols : list[str], optional
+            Column names.
+
+        Returns
+        -------
+        Intervention
+        """
+        # Convert periods to indices
+        start_t = self.period_to_index(start) if isinstance(start, str) else start
+        end_t = None
+        if end is not None:
+            end_t = self.period_to_index(end) if isinstance(end, str) else end
+
+        # Resolve names to indices
+        row_indices = self._resolve_rows(rows)
+        col_indices = self._resolve_cols(cols)
+
+        return Intervention(
+            name=name,
+            start_t=start_t,
+            end_t=end_t,
+            intervention_type=intervention_type,
+            value=value,
+            factor=factor,
+            rows=row_indices,
+            cols=col_indices,
+        )
+
+
+# =============================================================================
+# Shock effect estimation and application
+# =============================================================================
 
 
 def estimate_shock_effects(

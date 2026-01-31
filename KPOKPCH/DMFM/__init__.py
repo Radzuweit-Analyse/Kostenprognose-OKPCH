@@ -19,6 +19,7 @@ from .selection import (
     InformationCriteria,
 )
 from .shocks import (
+    # Shocks (stochastic)
     Shock,
     ShockSchedule,
     ShockEffects,
@@ -28,6 +29,12 @@ from .shocks import (
     estimate_shock_effects,
     apply_factor_shocks,
     apply_observation_shocks,
+    # Interventions (deterministic)
+    Intervention,
+    InterventionSchedule,
+    InterventionType,
+    # Factory
+    ScheduleFactory,
 )
 
 __all__ = [
@@ -59,7 +66,7 @@ __all__ = [
     "print_selection_summary",
     "ModelSelectionResult",
     "InformationCriteria",
-    # Shocks/Interventions
+    # Shocks (stochastic)
     "Shock",
     "ShockSchedule",
     "ShockEffects",
@@ -69,6 +76,12 @@ __all__ = [
     "estimate_shock_effects",
     "apply_factor_shocks",
     "apply_observation_shocks",
+    # Interventions (deterministic)
+    "Intervention",
+    "InterventionSchedule",
+    "InterventionType",
+    # Factory
+    "ScheduleFactory",
     # Convenience
     "fit_dmfm",
 ]
