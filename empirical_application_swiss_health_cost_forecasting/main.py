@@ -12,12 +12,15 @@ import numpy as np
 from pathlib import Path
 
 from KPOKPCH.forecast import (
-    load_cost_matrix,
-    generate_future_periods,
     ForecastConfig,
     forecast_dmfm,
 )
 from KPOKPCH.DMFM import select_rank, print_selection_summary
+
+from empirical_application_utils import (
+    load_matrix_data,
+    generate_future_periods,
+)
 
 from shocks_config import (
     factory,
@@ -99,7 +102,7 @@ def main():
 
     # Load data
     csv_path = BASE_DIR / INPUT_FILE
-    periods, cantons, groups, data = load_cost_matrix(str(csv_path))
+    periods, cantons, groups, data = load_matrix_data(str(csv_path))
 
     # Remove CH if present (we compute it as aggregate)
     if "CH" in cantons:

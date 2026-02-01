@@ -12,10 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-from KPOKPCH.forecast import (
-    load_cost_matrix,
-    ForecastConfig,
-)
+from KPOKPCH.forecast import ForecastConfig
 from KPOKPCH.forecast.validation import (
     ValidationConfig,
     ValidationResult,
@@ -25,6 +22,7 @@ from KPOKPCH.forecast.validation import (
 )
 from KPOKPCH.DMFM import select_rank
 
+from empirical_application_utils import load_matrix_data
 from shocks_config import create_intervention_schedule
 
 # Intervention schedule for deterministic policy changes (e.g., ZG 2026)
@@ -153,7 +151,7 @@ def apply_interventions_to_results(
 def load_and_preprocess_data():
     """Load and preprocess health cost data with annualization."""
     csv_path = BASE_DIR / INPUT_FILE
-    periods, cantons, groups, data = load_cost_matrix(str(csv_path))
+    periods, cantons, groups, data = load_matrix_data(str(csv_path))
 
     # Remove CH if present (we compute it as aggregate)
     if "CH" in cantons:

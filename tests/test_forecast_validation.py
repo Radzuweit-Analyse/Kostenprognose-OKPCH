@@ -19,7 +19,6 @@ from KPOKPCH.forecast.validation import (
     out_of_sample_validate,
     rolling_window_validate,
     average_validation_results,
-    out_of_sample_rmse,
 )
 
 # ---------------------------------------------------------------------------
@@ -489,39 +488,3 @@ class TestAverageValidationResults:
         """Test that empty results raises ValueError."""
         with pytest.raises(ValueError, match="No results to average"):
             average_validation_results([])
-
-
-# ---------------------------------------------------------------------------
-# out_of_sample_rmse tests
-# ---------------------------------------------------------------------------
-
-
-class TestOutOfSampleRMSE:
-    """Tests for out_of_sample_rmse convenience function."""
-
-    @pytest.fixture
-    def rmse_data(self, rng):
-        """Generate data for RMSE tests."""
-        T, p1, p2 = 30, 4, 3
-        Y = rng.normal(size=(T, p1, p2))
-        return Y
-
-    def test_returns_float(self, rmse_data):
-        """Test that function returns a float."""
-        rmse = out_of_sample_rmse(rmse_data, steps=4, k1=1, k2=1)
-
-        assert isinstance(rmse, float)
-        assert rmse >= 0
-
-    def test_parameters_passed_correctly(self, rmse_data):
-        """Test that parameters are passed to underlying functions."""
-        # This just tests that the function runs with various parameters
-        rmse = out_of_sample_rmse(
-            rmse_data,
-            steps=4,
-            k1=2,
-            k2=2,
-            P=1,
-        )
-
-        assert np.isfinite(rmse)
